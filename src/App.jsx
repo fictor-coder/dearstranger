@@ -390,7 +390,12 @@ export default function HeartLeakPrototype() {
         duration: post.expires_at ? "12h" : "forever",
         isPermanent: post.is_pinned,
       }));
-      setPosts([...savedPosts, ...seedPosts]);
+      // Demo/sample posts are prototype filler only. Once real posts are loaded,
+      // never mix fake demo content back into the feed — except the pinned
+      // placeholder, which stays until the account has saved its own pinned post.
+      const hasOwnPinnedPost = savedPosts.some((p) => p.isPermanent);
+      const pinnedPlaceholder = hasOwnPinnedPost ? [] : seedPosts.filter((p) => p.isPermanent);
+      setPosts([...pinnedPlaceholder, ...savedPosts]);
     }
 
     loadSavedPosts();
@@ -421,9 +426,11 @@ export default function HeartLeakPrototype() {
 
       const connectionIds = connectionData.map((connection) => connection.id);
       const otherIds = connectionData.map((connection) => connection.requester_id === authUserId ? connection.recipient_id : connection.requester_id);
-      const [{ data: messageData, error: messageError }, { data: profileData }, { data: notificationData, error: notificationError }] = await Promise.all([
-        supabase.from("messages").select("id, connection_id, sender_id, body, created_at, edited_at, deleted_at").in("connection_id", connectionIds).order("created_at", { ascending: true }),
+      const [{ data: messageData, error: messageError }, { data: profileData }, { data: connectedProfileData }, { data: notificationData, error: notificationError }] = await Promise.all([
+        supabase.from("messages").select("id, connection_id, sender_id, body, created_at, edited_at, deleted_at, seen_at").in("connection_id", connectionIds).order("created_at", { ascending: true }),
         supabase.from("profiles").select("id, anonymous_handle").in("id", otherIds),
+        // RLS only returns rows for people you're actually mutually connected with.
+        supabase.from("connected_profiles").select("id, username, bio").in("id", otherIds),
         supabase.from("notifications").select("id, type, connection_id, created_at").eq("recipient_id", authUserId).order("created_at", { ascending: false }),
       ]);
       if (messageError) {
@@ -432,6 +439,7 @@ export default function HeartLeakPrototype() {
       }
 
       const handles = new Map((profileData || []).map((profile) => [profile.id, profile.anonymous_handle]));
+      const connectedProfiles = new Map((connectedProfileData || []).map((p) => [p.id, p]));
       const messagesByConnection = new Map();
       for (const message of messageData || []) {
         const messages = messagesByConnection.get(message.connection_id) || [];
@@ -439,7 +447,9 @@ export default function HeartLeakPrototype() {
           id: message.id,
           from: message.sender_id === authUserId ? "you" : "them",
           text: message.body,
-          seen: true,
+          // Only messages you sent carry a meaningful read receipt — it reflects
+          // whether the other person has actually opened the conversation.
+          seen: message.sender_id === authUserId ? Boolean(message.seen_at) : true,
           edited: Boolean(message.edited_at),
           deleted: Boolean(message.deleted_at),
         });
@@ -453,14 +463,15 @@ export default function HeartLeakPrototype() {
           : connection.friend_requested_by
             ? connection.friend_requested_by === authUserId ? "requested" : "received"
             : "none";
+        const theirConnectedProfile = connectedProfiles.get(otherUserId);
         return {
           id: connection.id,
           postId: connection.post_id,
           otherUserId,
           otherUser: handles.get(otherUserId) || "Anonymous",
-          realName: handles.get(otherUserId) || "Anonymous",
+          realName: (friendStatus === "connected" && theirConnectedProfile?.username) || handles.get(otherUserId) || "Anonymous",
           friendStatus,
-          bio: "",
+          bio: (friendStatus === "connected" && theirConnectedProfile?.bio) || "",
           vibeSummary: "",
           connectedAt: connection.connected_at ? new Date(connection.connected_at).getTime() : null,
           nickname: "",
@@ -480,7 +491,7 @@ export default function HeartLeakPrototype() {
           id: notification.id,
           type: notification.type,
           threadId: thread.id,
-          text: notification.type === "connection_accepted"
+          text: notification.type === "connected"
             ? `${thread.otherUser} accepted your friend request`
             : `${thread.otherUser} wants to add you as a friend`,
           time: new Date(notification.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
@@ -576,9 +587,43 @@ export default function HeartLeakPrototype() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Back-button history sync: every in-app screen change pushes a browser
+  // history entry, so the hardware/browser back button steps back through
+  // HeartLeak's own screens instead of immediately exiting the app. Only
+  // exits once the user is already on "home" and presses back again.
+  const viewHistoryRef = useRef(["home"]);
+  useEffect(() => {
+    const stack = viewHistoryRef.current;
+    if (stack[stack.length - 1] !== view) {
+      stack.push(view);
+      window.history.pushState({ heartleakView: view }, "");
+    }
+  }, [view]);
+  useEffect(() => {
+    function handlePopState() {
+      const stack = viewHistoryRef.current;
+      if (stack.length > 1) {
+        stack.pop();
+        setView(stack[stack.length - 1]);
+      }
+    }
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   useEffect(() => {
     if (view === "thread") bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [view, threads, activeThreadId]);
+
+  // Real read receipts: mark the other person's messages as seen the moment
+  // you actually open the thread, no matter how you navigated there.
+  useEffect(() => {
+    if (view !== "thread" || !activeThreadId || !authUserId) return;
+    supabase.rpc("mark_connection_messages_seen", { target_connection_id: activeThreadId })
+      .then(({ error }) => {
+        if (error) console.error("Could not mark messages seen:", error.message);
+      });
+  }, [view, activeThreadId, authUserId]);
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
   const threadForPost = (postId) => threads.find((t) => t.postId === postId);
@@ -619,15 +664,6 @@ export default function HeartLeakPrototype() {
     setThreads((prev) => prev.map((t) => (t.id === activeThread.id ? { ...t, privateNote: noteDraft } : t)));
     setEditingNote(false);
     setToast("Note saved");
-  }
-
-  // simulates a "seen" read receipt so the delete-after-seen rule in #7 is demoable
-  function scheduleSeen(threadId, msgId) {
-    setTimeout(() => {
-      setThreads((prev) => prev.map((t) => t.id === threadId
-        ? { ...t, messages: t.messages.map((m) => (m.id === msgId ? { ...m, seen: true } : m)) }
-        : t));
-    }, 2200 + Math.random() * 1400);
   }
 
   async function sendFirstReply() {
@@ -676,24 +712,6 @@ export default function HeartLeakPrototype() {
     setMsgDraft("");
     setToast("Sent — only they can read this");
     setView("thread");
-    return;
-    if (hasBannedWord(msgDraft)) { setToast("Let's keep HeartLeak kind — please rephrase."); return; }
-    const id = "t" + Date.now();
-    const msgId = "m" + Date.now();
-    const other = "anon_" + Math.floor(1000 + Math.random() * 8999);
-    const realName = NAME_POOL[Math.floor(Math.random() * NAME_POOL.length)];
-    const demoThread = {
-      id, postId: activePostId, otherUser: other, realName, friendStatus: "none", bio: "",
-      vibeSummary: randomVibe(), connectedAt: null, nickname: "", privateNote: "",
-      messages: [{ id: msgId, from: "you", text: msgDraft.trim(), seen: false }],
-    };
-    setThreads((prev) => [...prev, demoThread]);
-    scheduleSeen(id, msgId);
-    setThreadOrigin("messages");
-    setActiveThreadId(id);
-    setMsgDraft("");
-    setToast("Sent — only they can read this");
-    setView("thread");
   }
 
   async function sendInThread() {
@@ -730,26 +748,6 @@ export default function HeartLeakPrototype() {
     setThreads((prev) => prev.map((thread) => thread.id === activeThread.id
       ? { ...thread, messages: [...thread.messages, { id: data.id, from: "you", text: data.body, seen: true }] }
       : thread));
-    setMsgDraft("");
-    setShowEmoji(false);
-    return;
-    if (hasBannedWord(msgDraft)) { setToast("Let's keep HeartLeak kind — please rephrase."); return; }
-
-    if (editingMsgId) {
-      setThreads((prev) => prev.map((t) => t.id === activeThread.id
-        ? { ...t, messages: t.messages.map((m) => (m.id === editingMsgId ? { ...m, text: msgDraft.trim(), edited: true } : m)) }
-        : t));
-      setEditingMsgId(null);
-      setMsgDraft("");
-      setToast("Message edited");
-      return;
-    }
-
-    const msgId = "m" + Date.now();
-    setThreads((prev) => prev.map((t) => t.id === activeThread.id
-      ? { ...t, messages: [...t.messages, { id: msgId, from: "you", text: msgDraft.trim(), seen: false }] }
-      : t));
-    scheduleSeen(activeThread.id, msgId);
     setMsgDraft("");
     setShowEmoji(false);
   }
