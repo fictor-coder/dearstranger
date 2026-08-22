@@ -379,17 +379,32 @@ export default function HeartLeakPrototype() {
         return;
       }
 
-      const savedPosts = data.map((post) => ({
-        id: post.id,
-        authorId: post.author_id,
-        author: post.author_id === authUserId ? "you" : anonymousHandleFor(post.author_id),
-        mood: post.mood,
-        text: post.body,
-        time: new Date(post.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-        isMine: post.author_id === authUserId,
-        duration: post.expires_at ? "12h" : "forever",
-        isPermanent: post.is_pinned,
-      }));
+      const now = Date.now();
+      const savedPosts = data
+        // A post is only meant to stay visible for its chosen duration.
+        // Drop anything expired (pinned posts never expire) instead of
+        // letting the RLS "you can always see your own row" rule make it
+        // look like it's still live in the feed.
+        .filter((post) => post.is_pinned || !post.expires_at || new Date(post.expires_at).getTime() > now)
+        .map((post) => {
+          let duration = "forever";
+          if (post.expires_at) {
+            const hoursTotal = Math.round((new Date(post.expires_at) - new Date(post.created_at)) / 3600000);
+            duration = hoursTotal <= 2 ? "2h" : hoursTotal <= 4 ? "4h" : "12h";
+          }
+          return {
+            id: post.id,
+            authorId: post.author_id,
+            author: post.author_id === authUserId ? "you" : anonymousHandleFor(post.author_id),
+            mood: post.mood,
+            text: post.body,
+            time: new Date(post.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+            isMine: post.author_id === authUserId,
+            duration,
+            isPermanent: post.is_pinned,
+            expiresAt: post.expires_at,
+          };
+        });
       // Demo/sample posts are prototype filler only. Once real posts are loaded,
       // never mix fake demo content back into the feed — except the pinned
       // placeholder, which stays until the account has saved its own pinned post.
@@ -399,6 +414,13 @@ export default function HeartLeakPrototype() {
     }
 
     loadSavedPosts();
+
+    // Also prune anything that expires while the app stays open, so a post
+    // doesn't linger past its chosen duration until the next reload.
+    const pruneTimer = setInterval(() => {
+      setPosts((prev) => prev.filter((p) => p.isPermanent || !p.expiresAt || new Date(p.expiresAt).getTime() > Date.now()));
+    }, 60000);
+    return () => clearInterval(pruneTimer);
   }, [authUserId]);
 
   // Conversations are loaded from the existing connections and messages tables.
@@ -973,14 +995,14 @@ export default function HeartLeakPrototype() {
       body: composeText.trim(),
       expires_at: expiresAtFor(composeDuration),
       is_pinned: false,
-    }).select("id, mood, body, is_pinned").single();
+    }).select("id, mood, body, is_pinned, expires_at").single();
     setIsPublishing(false);
     if (error) {
       console.error("Could not publish post:", error.message);
       setToast(`Post couldn't be shared: ${error.message}`);
       return;
     }
-    setPosts((prev) => [{ id: data.id, author: "you", mood: data.mood, text: data.body, time: "just now", isMine: true, duration: composeDuration, isPermanent: data.is_pinned }, ...prev]);
+    setPosts((prev) => [{ id: data.id, author: "you", mood: data.mood, text: data.body, time: "just now", isMine: true, duration: composeDuration, isPermanent: data.is_pinned, expiresAt: data.expires_at }, ...prev]);
     setComposeText("");
     setToast("Shared anonymously");
     setView("home");
