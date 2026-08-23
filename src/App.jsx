@@ -4,7 +4,7 @@ import {
   CloudRain, Smile, Sparkles, HelpCircle, Moon, Heart, Ear, Feather,
   PenLine, Clock, Settings, LogOut, Trash2, Flag, UserX, Pencil, X,
   SmilePlus, Paperclip, ChevronRight, ShieldCheck, Users, Inbox,
-  Award, Quote, StickyNote, Tag, Camera, Pin, EyeOff,
+  Award, Quote, StickyNote, Tag, Camera, Pin, EyeOff, MessageCircleHeart, RefreshCw, Copy, CheckCheck,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -76,6 +76,99 @@ const GREETINGS = [
   "What are you feeling? \ud83e\udd0d", "How are you feeling today? \ud83c\udf31", "How are you, really?",
   "What's been on your heart?", "Need someone to listen?", "Want to let it out?", "You're safe to share here.",
 ];
+
+// ---- Opener (conversation-starter) feature ----
+const OPENER_VIBES = ["Funny", "Chill", "Confident", "Shy", "Nerdy", "Sporty", "Artsy", "Deep thinker", "Adventurous"];
+const OPENER_KNOW_VIA = ["College / school", "Common friend", "Gym", "Cafe / coffee shop", "Instagram / social media", "Dating app", "Work / colleague", "Neighbor", "Abhi bas mile hain", "Other"];
+const OPENER_PLATFORMS = ["Instagram DM", "WhatsApp", "Snapchat", "Dating app", "In person", "Other"];
+const OPENER_INTENTS = ["Bas dosti karni hai", "Interested hoon, kuch aage badhe", "Pata nahi, dekhte hain"];
+const OPENER_STAGES = ["Bilkul pehla message hai (stranger)", "Thodi baat hui hai (2-3 baar)", "Already dost ho", "Bestie ho, ab kuch aur try karna hai"];
+const OPENER_TONES = ["Funny and playful", "Casual and friendly", "Bold and flirty", "Sweet and genuine", "Respectful and formal"];
+const OPENER_FORM_DEFAULTS = {
+  yourAge: "", yourVibe: [], theirName: "", theirAge: "", knowThemVia: "",
+  howWellKnown: "", noticedSomething: "", platform: OPENER_PLATFORMS[0],
+  intent: OPENER_INTENTS[0], stage: OPENER_STAGES[0], tone: OPENER_TONES[1],
+};
+
+// Builds 3 tailored opener suggestions entirely on-device — no API key needed.
+// Every line is written to avoid gendered verb conjugation (uses "hai"/"tha"/
+// "chahiye"/subjunctive forms), since the sender's gender isn't asked here.
+function buildOpeners(form) {
+  const name = (form.theirName || "").trim();
+  const namePart = name ? `${name}, ` : "";
+  const ctx = (form.noticedSomething || "").trim() || (form.howWellKnown || "").trim();
+  const stage = form.stage || OPENER_STAGES[0];
+  const stranger = stage.startsWith("Bilkul pehla");
+  const friendsAlready = stage.includes("Already dost") || stage.includes("Bestie");
+  const tone = form.tone || OPENER_TONES[1];
+  const g = tone === "Sweet and genuine" ? "Hii" : tone === "Respectful and formal" ? "Hi" : "Hey";
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const openers = [];
+
+  openers.push(
+    ctx
+      ? {
+          style: "Context wala hook",
+          message: pick([
+            stranger
+              ? `${g} ${namePart}${ctx} \u2014 usko lekar thodi si curiosity hai, bata na iske baare mein?`
+              : `${namePart}${ctx}, wo kaise chal raha hai?`,
+            stranger
+              ? `${g} ${namePart}${ctx}, sach mein? Aur bata na kaisa raha.`
+              : `${namePart}${ctx} \u2014 kaafi interesting laga, aur sunao.`,
+          ]),
+          why: "Kisi specific cheez ka reference generic 'hi' se zyada asar karta hai \u2014 pata chalta hai tumne dhyan diya.",
+        }
+      : {
+          style: "Simple aur seedha",
+          message: pick([
+            stranger ? `${g} ${namePart}kaise ho? Bas hello kehna tha.` : `${g} ${namePart}kaise chal raha hai sab?`,
+            stranger ? `${g} ${namePart}kaafi din ho gaye, socha hello bol hi doon.` : `${g} ${namePart}sab badhiya?`,
+          ]),
+          why: "Low-pressure aur simple \u2014 koi expectation nahi banata, bas baat shuru karta hai.",
+        }
+  );
+
+  openers.push({
+    style: "Curious sawaal",
+    message: pick([
+      friendsAlready
+        ? `${namePart}ek random sawaal \u2014 aajkal kya chal raha hai life mein?`
+        : `${g}! ${namePart}${(form.howWellKnown || "").trim() ? "suna hai " + form.howWellKnown.trim() + " \u2014 " : ""}sach mein sab kaisa chal raha hai?`,
+      friendsAlready
+        ? `${namePart}bohot time ho gaya baat kiye \u2014 kya naya chal raha hai?`
+        : `${namePart}ek cheez puchni thi \u2014 weekend mein kya karna pasand hai?`,
+    ]),
+    why: "Genuine sawaal reply karna easy bana deta hai, pressure nahi lagta.",
+  });
+
+  const toneVariants = {
+    "Funny and playful": [
+      `${namePart}okay ye thoda random hai but hi \ud83d\udc4b ${ctx ? "\u2014 " + ctx + " dekh ke text karna hi tha." : "\u2014 bas keh dena tha before I lose the nerve."}`,
+      `${namePart}breaking news: ${ctx || "socha aaj hi baat kar loon"} \u2014 reply karoge?`,
+    ],
+    "Bold and flirty": [
+      `${namePart}${ctx ? ctx + " \u2014 bas itna kehna tha ki" : "not gonna lie,"} tumse baat karne ka bahut mann hai.`,
+      `${namePart}bina lag lapet ke \u2014 tumse baat karne ka mann hai, hi.`,
+    ],
+    "Sweet and genuine": [
+      `${namePart}${ctx ? ctx + " \u2014 socha ye batana zaroori hai ki tumhare saath baat karna accha lagta hai." : "bas ye batana tha ki tumhare saath baat karna accha lagta hai."}`,
+      `${namePart}kaise ho? Bas itna kehna tha ki tumse baat karne ka mann hai.`,
+    ],
+    "Respectful and formal": [
+      `${g} ${namePart}umeed hai sab theek hoga. ${ctx ? ctx + " \u2014 socha baat kar loon." : "Bas ek hello kehna tha."}`,
+      `${g} ${namePart}socha ek baar baat karni chahiye \u2014 kaisa chal raha hai sab?`,
+    ],
+  };
+  const toneMsgOptions = toneVariants[tone] || [`${g} ${namePart}${ctx ? ctx + " \u2014 socha baat kar hi loon." : "kya chal raha hai?"}`];
+  openers.push({
+    style: tone.replace(" and ", " & "),
+    message: pick(toneMsgOptions),
+    why: `Tumne jo tone chuna (${tone.toLowerCase()}), usi ke hisaab se likha gaya hai.`,
+  });
+
+  return openers;
+}
 
 const NAME_POOL = ["Priya", "Rahul", "Ananya", "Karan", "Isha", "Vivaan", "Meera", "Aditya", "Nisha", "Rohan"];
 
@@ -162,6 +255,7 @@ const PAGE_INTRO = {
   home: "See what people are feeling right now, and reach out anonymously.",
   messages: "Your private conversations — visible only to the two people in them.",
   notifications: "What's happened since you last checked.",
+  opener: "Fill in a few details, get tailored lines to start the conversation.",
   profile: "Your two profiles — anonymous and connected.",
 };
 
@@ -247,6 +341,10 @@ export default function HeartLeakPrototype() {
   const [composeText, setComposeText] = useState("");
   const [composeMood, setComposeMood] = useState("thoughtful");
   const [composeDuration, setComposeDuration] = useState("12h");
+  const [openerForm, setOpenerForm] = useState(OPENER_FORM_DEFAULTS);
+  const [openerResults, setOpenerResults] = useState(null);
+  const [isGeneratingOpeners, setIsGeneratingOpeners] = useState(false);
+  const [copiedOpenerIndex, setCopiedOpenerIndex] = useState(null);
   const [msgDraft, setMsgDraft] = useState("");
   const [toast, setToast] = useState("");
   const bottomRef = useRef(null);
@@ -1012,8 +1110,33 @@ export default function HeartLeakPrototype() {
     { key: "home", label: "Home", Icon: Home },
     { key: "messages", label: "Messages", Icon: MessageCircle },
     { key: "notifications", label: "Alerts", Icon: Bell },
+    { key: "opener", label: "Opener", Icon: MessageCircleHeart },
     { key: "profile", label: "Profile", Icon: User },
   ];
+
+  function generateOpeners() {
+    setIsGeneratingOpeners(true);
+    setTimeout(() => {
+      setOpenerResults(buildOpeners(openerForm));
+      setIsGeneratingOpeners(false);
+    }, 550);
+  }
+
+  function copyOpener(text, index) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedOpenerIndex(index);
+      setTimeout(() => setCopiedOpenerIndex((cur) => (cur === index ? null : cur)), 1600);
+    });
+  }
+
+  function toggleOpenerVibe(vibe) {
+    setOpenerForm((prev) => {
+      const has = prev.yourVibe.includes(vibe);
+      if (has) return { ...prev, yourVibe: prev.yourVibe.filter((v) => v !== vibe) };
+      if (prev.yourVibe.length >= 3) return prev;
+      return { ...prev, yourVibe: [...prev.yourVibe, vibe] };
+    });
+  }
 
   const myPosts = posts.filter((p) => p.isMine && !p.isPermanent);
   const permanentPost = posts.find((p) => p.isPermanent);
@@ -1158,7 +1281,7 @@ export default function HeartLeakPrototype() {
           </div>
         )}
 
-        {(view === "home" || view === "messages" || view === "notifications" || view === "profile") && (
+        {(view === "home" || view === "messages" || view === "notifications" || view === "opener" || view === "profile") && (
           <header className="relative px-5 pt-7 pb-4 border-b transition-colors duration-200" style={darkMode
             ? { borderColor: DARKBORDER, backgroundImage: `linear-gradient(180deg, ${LOGO_PURPLE}1A, transparent)` }
             : { borderColor: MUTED + "22", backgroundImage: `linear-gradient(180deg, ${CORAL}0F, transparent)` }}>
@@ -1178,6 +1301,7 @@ export default function HeartLeakPrototype() {
               {view === "home" && greeting}
               {view === "messages" && "Messages"}
               {view === "notifications" && "Notifications"}
+              {view === "opener" && "Conversation Opener"}
               {view === "profile" && "You"}
             </h1>
             <p className={`text-[13px] mt-1 ${view === "profile" ? "text-center" : ""}`} style={{ color: darkMode ? DARKMUTED : MUTED }}>{PAGE_INTRO[view]}</p>
@@ -1242,6 +1366,178 @@ export default function HeartLeakPrototype() {
                 </div>
               );
             })}
+          </main>
+        )}
+
+        {view === "opener" && (
+          <main className="flex-1 overflow-y-auto px-5 py-4 pb-28">
+            {!openerResults ? (
+              <div className="space-y-3">
+                <div className="rounded-2xl bg-white p-4" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 10px rgba(58,46,42,0.05)" }}>
+                  <p className="text-[13px] font-semibold mb-3 flex items-center gap-1.5" style={{ color: PLUM }}>
+                    <User size={13} /> Thoda apna intro do
+                    <span className="text-[10px] font-normal px-2 py-0.5 rounded-full" style={{ backgroundColor: MUTED + "1A", color: MUTED }}>optional</span>
+                  </p>
+                  <div className="mb-3">
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Tumhari age</label>
+                    <input type="number" min="13" max="99" value={openerForm.yourAge}
+                      onChange={(e) => setOpenerForm((p) => ({ ...p, yourAge: e.target.value }))}
+                      placeholder="21" className="w-full rounded-xl px-3 py-2 text-[14px] outline-none"
+                      style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+                  </div>
+                  <div>
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Tumhara vibe (max 3 chuno)</label>
+                    <div className="flex flex-wrap gap-2">
+                      {OPENER_VIBES.map((v) => (
+                        <button key={v} type="button" onClick={() => toggleOpenerVibe(v)}
+                          className="px-3 py-1.5 rounded-full text-[12px] font-medium transition"
+                          style={openerForm.yourVibe.includes(v) ? { background: gradient(PLUM), color: "#fff", boxShadow: glow(PLUM, "40") } : { border: `1px solid ${MUTED}33`, color: MUTED }}>
+                          {v}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 10px rgba(58,46,42,0.05)" }}>
+                  <p className="text-[13px] font-semibold mb-3 flex items-center gap-1.5" style={{ color: PLUM }}>
+                    <Heart size={13} /> Ab bata do, dil kiske liye dhak-dhak karta hai
+                  </p>
+                  <div className="grid grid-cols-2 gap-2.5 mb-3">
+                    <div>
+                      <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Naam / nickname</label>
+                      <input type="text" value={openerForm.theirName}
+                        onChange={(e) => setOpenerForm((p) => ({ ...p, theirName: e.target.value }))}
+                        placeholder="e.g. Ananya" className="w-full rounded-xl px-3 py-2 text-[14px] outline-none"
+                        style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+                    </div>
+                    <div>
+                      <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Unki age</label>
+                      <input type="number" min="13" max="99" value={openerForm.theirAge}
+                        onChange={(e) => setOpenerForm((p) => ({ ...p, theirAge: e.target.value }))}
+                        placeholder="22" className="w-full rounded-xl px-3 py-2 text-[14px] outline-none"
+                        style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Pehchaan kaise hui</label>
+                    <select value={openerForm.knowThemVia}
+                      onChange={(e) => setOpenerForm((p) => ({ ...p, knowThemVia: e.target.value }))}
+                      className="w-full rounded-xl px-3 py-2 text-[14px] outline-none bg-white"
+                      style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }}>
+                      <option value="">Choose one</option>
+                      {OPENER_KNOW_VIA.map((k) => <option key={k} value={k}>{k}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 10px rgba(58,46,42,0.05)" }}>
+                  <p className="text-[13px] font-semibold mb-3 flex items-center gap-1.5" style={{ color: PLUM }}>
+                    <Quote size={13} /> Woh chhoti si baat jo sirf tumhe pata hai
+                  </p>
+                  <div className="mb-3">
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Unke baare mein kya aur kitna jaante ho?</label>
+                    <textarea rows={2} value={openerForm.howWellKnown}
+                      onChange={(e) => setOpenerForm((p) => ({ ...p, howWellKnown: e.target.value }))}
+                      placeholder="e.g. bas naam pata hai, kabhi baat nahi hui"
+                      className="w-full rounded-xl px-3 py-2 text-[14px] outline-none resize-none"
+                      style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+                  </div>
+                  <div>
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Kuch specific notice kiya?</label>
+                    <textarea rows={2} value={openerForm.noticedSomething}
+                      onChange={(e) => setOpenerForm((p) => ({ ...p, noticedSomething: e.target.value }))}
+                      placeholder="e.g. unki story mein trekking ki photo dekhi thi"
+                      className="w-full rounded-xl px-3 py-2 text-[14px] outline-none resize-none"
+                      style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 10px rgba(58,46,42,0.05)" }}>
+                  <p className="text-[13px] font-semibold mb-3 flex items-center gap-1.5" style={{ color: PLUM }}>
+                    <MessageCircleHeart size={13} /> Ab scene set karte hain
+                  </p>
+                  <div className="grid grid-cols-2 gap-2.5 mb-3">
+                    <div>
+                      <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Kahan message karoge</label>
+                      <select value={openerForm.platform}
+                        onChange={(e) => setOpenerForm((p) => ({ ...p, platform: e.target.value }))}
+                        className="w-full rounded-xl px-3 py-2 text-[14px] outline-none bg-white"
+                        style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }}>
+                        {OPENER_PLATFORMS.map((k) => <option key={k} value={k}>{k}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Iraada kya hai</label>
+                      <select value={openerForm.intent}
+                        onChange={(e) => setOpenerForm((p) => ({ ...p, intent: e.target.value }))}
+                        className="w-full rounded-xl px-3 py-2 text-[14px] outline-none bg-white"
+                        style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }}>
+                        {OPENER_INTENTS.map((k) => <option key={k} value={k}>{k}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="mb-3">
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Abhi tak baat kahan tak pahunchi hai</label>
+                    <select value={openerForm.stage}
+                      onChange={(e) => setOpenerForm((p) => ({ ...p, stage: e.target.value }))}
+                      className="w-full rounded-xl px-3 py-2 text-[14px] outline-none bg-white"
+                      style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }}>
+                      {OPENER_STAGES.map((k) => <option key={k} value={k}>{k}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Tone</label>
+                    <div className="flex flex-wrap gap-2">
+                      {OPENER_TONES.map((t) => (
+                        <button key={t} type="button" onClick={() => setOpenerForm((p) => ({ ...p, tone: t }))}
+                          className="px-3 py-1.5 rounded-full text-[12px] font-medium transition"
+                          style={openerForm.tone === t ? { background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL, "40") } : { border: `1px solid ${MUTED}33`, color: MUTED }}>
+                          {t.replace(" and ", " & ")}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <button onClick={generateOpeners} disabled={isGeneratingOpeners}
+                  className="w-full py-3 rounded-xl font-medium text-sm disabled:opacity-60 active:scale-[0.98] transition flex items-center justify-center gap-2"
+                  style={{ background: gradient(AMBER), color: "#4A3708", boxShadow: glow(AMBER) }}>
+                  <MessageCircleHeart size={15} /> {isGeneratingOpeners ? "Likh rahe hain..." : "Let's start"}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[13px] font-medium" style={{ color: CHARCOAL }}>Yeh lo, tumhara pehla message taiyaar hai</p>
+                  <button onClick={() => setOpenerResults(buildOpeners(openerForm))}
+                    className="text-[11.5px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 transition shrink-0"
+                    style={{ backgroundColor: CHARCOAL + "0F", color: CHARCOAL }}>
+                    <RefreshCw size={12} /> 3 aur banao
+                  </button>
+                </div>
+                {openerResults.map((o, i) => (
+                  <div key={i} className="rounded-2xl bg-white p-4" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 10px rgba(58,46,42,0.05)" }}>
+                    <span className="text-[10.5px] font-bold uppercase tracking-wide" style={{ color: "#B8860B" }}>{o.style}</span>
+                    <div className="mt-2 mb-2.5 rounded-2xl rounded-bl-md px-4 py-3 text-[14.5px] font-medium leading-relaxed" style={{ background: gradient(AMBER), color: "#4A3708" }}>
+                      {o.message}
+                    </div>
+                    <p className="text-[12px] leading-snug mb-2.5" style={{ color: MUTED }}>{o.why}</p>
+                    <div className="flex justify-end">
+                      <button onClick={() => copyOpener(o.message, i)}
+                        className="text-[11.5px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 transition"
+                        style={copiedOpenerIndex === i ? { border: `1px solid ${TEAL}`, color: TEAL } : { border: `1px solid ${MUTED}33`, color: MUTED }}>
+                        {copiedOpenerIndex === i ? <><CheckCheck size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button onClick={() => setOpenerResults(null)}
+                  className="w-full py-3 rounded-xl font-medium text-sm active:scale-[0.98] transition" style={{ border: `1px solid ${MUTED}33`, color: MUTED }}>
+                  Details badlo
+                </button>
+              </div>
+            )}
           </main>
         )}
 
