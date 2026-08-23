@@ -1116,10 +1116,16 @@ export default function HeartLeakPrototype() {
 
   function generateOpeners() {
     setIsGeneratingOpeners(true);
-    setTimeout(() => {
-      setOpenerResults(buildOpeners(openerForm));
-      setIsGeneratingOpeners(false);
-    }, 550);
+    supabase.functions.invoke("generate-opener", { body: openerForm })
+      .then(({ data, error }) => {
+        if (error || !data?.openers?.length) throw error || new Error("no openers returned");
+        setOpenerResults(data.openers);
+      })
+      .catch(() => {
+        // ai call failed or key not set yet, use the local template instead
+        setOpenerResults(buildOpeners(openerForm));
+      })
+      .finally(() => setIsGeneratingOpeners(false));
   }
 
   function copyOpener(text, index) {
@@ -1510,7 +1516,7 @@ export default function HeartLeakPrototype() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-[13px] font-medium" style={{ color: CHARCOAL }}>Yeh lo, tumhara pehla message taiyaar hai</p>
-                  <button onClick={() => setOpenerResults(buildOpeners(openerForm))}
+                  <button onClick={generateOpeners}
                     className="text-[11.5px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 transition shrink-0"
                     style={{ backgroundColor: CHARCOAL + "0F", color: CHARCOAL }}>
                     <RefreshCw size={12} /> 3 aur banao
