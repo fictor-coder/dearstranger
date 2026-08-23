@@ -1,4 +1,4 @@
-// calls claude api to generate the openers, key stays server side
+// calls gemini api (free tier, no card needed) to generate the openers, key stays server side
 // if key isnt set yet or the call fails, frontend just falls back to the template version
 
 const SYSTEM_PROMPT = `You are the writing engine behind "Pehla Message," a tool that helps someone in India craft a warm, respectful first message to a person they are interested in getting to know. You are given details about the sender, the recipient, and the context. Generate exactly 3 distinct opening messages the sender could actually send.
@@ -15,6 +15,8 @@ Rules:
 {"openers":[{"style":"2-4 word label for this style","message":"the opener text","why":"one short sentence on why it could work"}]}
 The openers array must contain exactly 3 items.`;
 
+const GEMINI_MODEL = "gemini-2.5-flash";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -26,9 +28,9 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) {
-      return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY not configured" }), {
+      return new Response(JSON.stringify({ error: "GEMINI_API_KEY not configured" }), {
         status: 503,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -54,32 +56,29 @@ Deno.serve(async (req: Request) => {
       2,
     );
 
-    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+          generationConfig: { responseMimeType: "application/json" },
+        }),
       },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
-    });
+    );
 
-    const anthropicJson = await anthropicRes.json();
-    if (!anthropicRes.ok) {
-      const message = anthropicJson?.error?.message || `Anthropic API error (${anthropicRes.status})`;
+    const geminiJson = await geminiRes.json();
+    if (!geminiRes.ok) {
+      const message = geminiJson?.error?.message || `Gemini API error (${geminiRes.status})`;
       return new Response(JSON.stringify({ error: message }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const textBlock = (anthropicJson.content || []).find((b: any) => b.type === "text");
-    const raw = (textBlock?.text || "").replace(/```json|```/g, "").trim();
+    const raw = (geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || "").replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(raw);
     if (!parsed.openers || !parsed.openers.length) throw new Error("empty response from model");
 
