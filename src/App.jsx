@@ -4,7 +4,7 @@ import {
   CloudRain, Smile, Sparkles, HelpCircle, Moon, Heart, Ear, Feather,
   PenLine, Clock, Settings, LogOut, Trash2, Flag, UserX, Pencil, X,
   SmilePlus, Paperclip, ChevronRight, ShieldCheck, Users, Inbox,
-  Award, Quote, StickyNote, Tag, Camera, Pin, EyeOff, MessageCircleHeart, RefreshCw, Copy, CheckCheck,
+  Award, Quote, StickyNote, Tag, Camera, Pin, EyeOff, Unlock, MessageCircleHeart, RefreshCw, Copy, CheckCheck,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -49,6 +49,9 @@ function gradient(hex, angle = 135) {
 }
 function glow(hex, alpha = "4D") {
   return `0 6px 16px ${hex}${alpha}`;
+}
+function notifColor(type) {
+  return { connected: TEAL, friend_request: AMBER, access_requested: PLUM, access_granted: TEAL }[type] || CORAL;
 }
 function expiresAtFor(duration) {
   const hours = { "2h": 2, "4h": 4, "12h": 12 }[duration];
@@ -417,6 +420,10 @@ export default function HeartLeakPrototype() {
   const [editingConnectedProfile, setEditingConnectedProfile] = useState(false);
   const [connectedDraft, setConnectedDraft] = useState(emptyProfile);
 
+  // "Only For People I Care About" — approval-gated section of the connected profile.
+  // Per-thread fields (myThoughtAccessStatus / theirThought / incomingThoughtRequestStatus)
+  // are attached to each thread alongside nickname/privateNote below.
+
   // #1 (anonymous) — the one pinned, permanent post is edited in place from the profile
   const [editingPermanentPost, setEditingPermanentPost] = useState(false);
   const [permanentDraft, setPermanentDraft] = useState("");
@@ -567,12 +574,18 @@ export default function HeartLeakPrototype() {
 
       const connectionIds = connectionData.map((connection) => connection.id);
       const otherIds = connectionData.map((connection) => connection.requester_id === authUserId ? connection.recipient_id : connection.requester_id);
-      const [{ data: messageData, error: messageError }, { data: profileData }, { data: connectedProfileData }, { data: notificationData, error: notificationError }] = await Promise.all([
+      const [{ data: messageData, error: messageError }, { data: profileData }, { data: connectedProfileData }, { data: notificationData, error: notificationError }, { data: theirThoughtsData }, { data: myThoughtAccessData }, { data: incomingThoughtAccessData }] = await Promise.all([
         supabase.from("messages").select("id, connection_id, sender_id, body, created_at, edited_at, deleted_at, seen_at").in("connection_id", connectionIds).order("created_at", { ascending: true }),
         supabase.from("profiles").select("id, anonymous_handle").in("id", otherIds),
         // RLS only returns rows for people you're actually mutually connected with.
         supabase.from("connected_profiles").select("id, username, bio").in("id", otherIds),
         supabase.from("notifications").select("id, type, connection_id, created_at").eq("recipient_id", authUserId).order("created_at", { ascending: false }),
+        // "Only For People I Care About" — RLS silently returns content only for owners who've approved you (or yourself).
+        supabase.from("private_thoughts").select("id, content").in("id", otherIds),
+        // Your own outgoing requests to see other people's care-about content.
+        supabase.from("private_thought_access").select("owner_id, status").eq("viewer_id", authUserId).in("owner_id", otherIds),
+        // Requests other people have sent you, asking to see YOUR care-about content.
+        supabase.from("private_thought_access").select("viewer_id, status, requested_at").eq("owner_id", authUserId),
       ]);
       if (messageError) {
         console.error("Could not load messages:", messageError.message);
@@ -581,6 +594,9 @@ export default function HeartLeakPrototype() {
 
       const handles = new Map((profileData || []).map((profile) => [profile.id, profile.anonymous_handle]));
       const connectedProfiles = new Map((connectedProfileData || []).map((p) => [p.id, p]));
+      const theirThoughts = new Map((theirThoughtsData || []).map((t) => [t.id, t.content]));
+      const myThoughtAccess = new Map((myThoughtAccessData || []).map((a) => [a.owner_id, a.status]));
+      const incomingThoughtAccess = new Map((incomingThoughtAccessData || []).map((a) => [a.viewer_id, { status: a.status, requestedAt: a.requested_at }]));
       const messagesByConnection = new Map();
       for (const message of messageData || []) {
         const messages = messagesByConnection.get(message.connection_id) || [];
@@ -605,6 +621,7 @@ export default function HeartLeakPrototype() {
             ? connection.friend_requested_by === authUserId ? "requested" : "received"
             : "none";
         const theirConnectedProfile = connectedProfiles.get(otherUserId);
+        const incoming = incomingThoughtAccess.get(otherUserId);
         return {
           id: connection.id,
           postId: connection.post_id,
@@ -617,6 +634,12 @@ export default function HeartLeakPrototype() {
           connectedAt: connection.connected_at ? new Date(connection.connected_at).getTime() : null,
           nickname: "",
           privateNote: "",
+          // "Only For People I Care About" — your request status toward them + their content (once approved).
+          myThoughtAccessStatus: myThoughtAccess.get(otherUserId) || "none",
+          theirThought: theirThoughts.get(otherUserId) || "",
+          // their request status toward YOUR content, if they've asked
+          incomingThoughtRequestStatus: incoming?.status || "none",
+          incomingThoughtRequestedAt: incoming?.requestedAt || null,
           messages: messagesByConnection.get(connection.id) || [],
         };
       });
@@ -628,13 +651,17 @@ export default function HeartLeakPrototype() {
       const savedAlertItems = notificationError ? [] : (notificationData || []).flatMap((notification) => {
         const thread = threadsById.get(notification.connection_id);
         if (!thread) return [];
+        const notifText = {
+          connected: `${thread.otherUser} accepted your friend request`,
+          access_requested: `${thread.otherUser} wants to see "Only For People I Care About"`,
+          access_granted: `${thread.otherUser} gave you access to "Only For People I Care About"`,
+        }[notification.type] || `${thread.otherUser} wants to add you as a friend`;
         return [{
           id: notification.id,
           type: notification.type,
           threadId: thread.id,
-          text: notification.type === "connected"
-            ? `${thread.otherUser} accepted your friend request`
-            : `${thread.otherUser} wants to add you as a friend`,
+          otherUserId: thread.otherUserId,
+          text: notifText,
           time: new Date(notification.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
         }];
       });
@@ -689,11 +716,11 @@ export default function HeartLeakPrototype() {
     if (!authUserId) return;
 
     async function loadPrivateProfile() {
-      const { data, error } = await supabase
-        .from("private_profiles")
-        .select("username, age, gender, bio, private_bio")
-        .eq("id", authUserId)
-        .maybeSingle();
+      const [{ data, error }, { data: thoughtData }] = await Promise.all([
+        supabase.from("private_profiles").select("username, age, gender, bio").eq("id", authUserId).maybeSingle(),
+        // "Only For People I Care About" content now lives in its own table (access-controlled).
+        supabase.from("private_thoughts").select("content").eq("id", authUserId).maybeSingle(),
+      ]);
 
       if (error) {
         console.error("Could not load private profile:", error.message);
@@ -711,7 +738,7 @@ export default function HeartLeakPrototype() {
         gender: data.gender || "",
         pic: null,
         bio: data.bio || "",
-        privateBio: data.private_bio || "",
+        privateBio: thoughtData?.content || "",
       };
       setConnectedProfile(profile);
       setOnboardDraft(profile);
@@ -788,6 +815,12 @@ export default function HeartLeakPrototype() {
 
   // #3 — tapping a notification jumps straight into the relevant chat
   function openNotification(n) {
+    if (n.type === "access_requested") {
+      // The approve/deny control lives on your own profile, not their thread.
+      setProfileTab("connected");
+      setView("profile");
+      return;
+    }
     if (!n.threadId || !threads.find((t) => t.id === n.threadId)) return;
     setThreadOrigin("notifications");
     setActiveThreadId(n.threadId);
@@ -976,6 +1009,31 @@ export default function HeartLeakPrototype() {
     setToast(`Connected with ${t.realName}`);
   }
 
+  // "Only For People I Care About" — ask a connected person for access to their care-about content.
+  async function requestThoughtAccess(otherUserId) {
+    if (!authUserId || !otherUserId) return;
+    const { error } = await supabase.from("private_thought_access").insert({ owner_id: otherUserId, viewer_id: authUserId });
+    if (error) {
+      setToast(`Couldn't send request: ${error.message}`);
+      return;
+    }
+    setThreads((prev) => prev.map((t) => (t.otherUserId === otherUserId ? { ...t, myThoughtAccessStatus: "pending" } : t)));
+    setToast("Request sent");
+  }
+  // Approve or deny someone who's asked to see YOUR care-about content.
+  async function respondThoughtAccess(viewerId, decision) {
+    if (!authUserId || !viewerId) return;
+    const { error } = await supabase.from("private_thought_access")
+      .update({ status: decision, responded_at: new Date().toISOString() })
+      .eq("owner_id", authUserId).eq("viewer_id", viewerId);
+    if (error) {
+      setToast(`Couldn't update that request: ${error.message}`);
+      return;
+    }
+    setThreads((prev) => prev.map((t) => (t.otherUserId === viewerId ? { ...t, incomingThoughtRequestStatus: decision } : t)));
+    setToast(decision === "approved" ? "Access granted" : "Request declined");
+  }
+
   async function blockPerson(name) {
     if (authUserId && activeThread?.otherUserId) {
       const { error } = await supabase.from("blocks").upsert({ blocker_id: authUserId, blocked_id: activeThread.otherUserId });
@@ -1031,13 +1089,14 @@ export default function HeartLeakPrototype() {
       age: Number(onboardDraft.age),
       gender: onboardDraft.gender,
       bio: onboardDraft.bio.trim() || null,
-      private_bio: onboardDraft.privateBio.trim() || null,
     });
     if (error) {
       console.error("Could not save private profile:", error.message);
       setToast(`Profile couldn't be saved: ${error.message}`);
       return;
     }
+    const { error: thoughtError } = await supabase.from("private_thoughts").upsert({ id: authUserId, content: onboardDraft.privateBio.trim() || null });
+    if (thoughtError) console.error("Could not save care-about content:", thoughtError.message);
     setConnectedProfile(onboardDraft);
     setHasOnboarded(true);
     setToast("Welcome to DearStrangers");
@@ -1060,13 +1119,14 @@ export default function HeartLeakPrototype() {
       age: Number(connectedDraft.age),
       gender: connectedDraft.gender,
       bio: connectedDraft.bio.trim() || null,
-      private_bio: connectedDraft.privateBio.trim() || null,
     });
     if (error) {
       console.error("Could not update private profile:", error.message);
       setToast(`Profile couldn't be updated: ${error.message}`);
       return;
     }
+    const { error: thoughtError } = await supabase.from("private_thoughts").upsert({ id: authUserId, content: connectedDraft.privateBio.trim() || null });
+    if (thoughtError) console.error("Could not update care-about content:", thoughtError.message);
     setConnectedProfile(connectedDraft);
     setEditingConnectedProfile(false);
     setToast("Profile updated");
@@ -1248,8 +1308,8 @@ export default function HeartLeakPrototype() {
             </div>
 
             <div>
-              <label className="text-[12px] font-medium mb-1 flex items-center gap-1.5" style={{ color: DARKMUTED }}><EyeOff size={12} /> Private thoughts (only you can see this)</label>
-              <textarea value={onboardDraft.privateBio} onChange={(e) => handlePrivateBioChange(e, setOnboardDraft)} rows={3} placeholder="Unjudged, unfiltered — whatever you want to keep just for yourself"
+              <label className="text-[12px] font-medium mb-1 flex items-center gap-1.5" style={{ color: DARKMUTED }}><EyeOff size={12} /> Only For People I Care About</label>
+              <textarea value={onboardDraft.privateBio} onChange={(e) => handlePrivateBioChange(e, setOnboardDraft)} rows={3} placeholder="Nobody sees this unless you approve their request — add it later if you want"
                 className="w-full rounded-xl px-3.5 py-2.5 text-[13.5px] outline-none" style={{ backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}`, color: DARKTEXT }} />
               <p className="text-[11px] mt-1 text-right" style={{ color: DARKMUTED }}>{wordCount(onboardDraft.privateBio)}/{BIO_WORD_LIMIT} words</p>
             </div>
@@ -1917,6 +1977,35 @@ export default function HeartLeakPrototype() {
                     )}
                   </div>
 
+                  {/* "Only For People I Care About" — approval-gated content, visible once they approve you */}
+                  <div className="rounded-2xl p-4 bg-white mb-4" style={{ border: `1px solid ${MUTED}22` }}>
+                    <p className="font-semibold text-[13.5px] mb-1.5 flex items-center gap-1.5" style={{ color: CHARCOAL }}>
+                      <EyeOff size={13} style={{ color: PLUM }} /> Only For People I Care About
+                    </p>
+                    {activeThread.myThoughtAccessStatus === "approved" ? (
+                      <p className="text-[13px] leading-relaxed" style={{ color: CHARCOAL }}>
+                        {activeThread.theirThought || "They haven't written anything here yet."}
+                      </p>
+                    ) : activeThread.myThoughtAccessStatus === "pending" ? (
+                      <p className="text-[12.5px] flex items-center gap-1.5" style={{ color: MUTED }}>
+                        <Lock size={11} className="shrink-0" /> Request sent — waiting for {activeThread.realName} to approve.
+                      </p>
+                    ) : activeThread.myThoughtAccessStatus === "denied" ? (
+                      <p className="text-[12.5px] flex items-center gap-1.5" style={{ color: MUTED }}>
+                        <Lock size={11} className="shrink-0" /> {activeThread.realName} hasn't opened this up to you.
+                      </p>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12.5px] flex items-center gap-1.5" style={{ color: MUTED }}>
+                          <Lock size={11} className="shrink-0" /> Locked — ask to see this.
+                        </p>
+                        <button onClick={() => requestThoughtAccess(activeThread.otherUserId)} className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full shrink-0" style={{ background: gradient(PLUM), color: "#fff" }}>
+                          Request access
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   {/* connector #3 — private note, only the owner sees this */}
                   <div className="rounded-2xl p-4 bg-white mb-4" style={{ border: `1px solid ${MUTED}22` }}>
                     <div className="flex items-center justify-between mb-1.5">
@@ -2033,8 +2122,12 @@ export default function HeartLeakPrototype() {
               <div key={n.id} onClick={() => openNotification(n)}
                 className={`rounded-xl p-3.5 bg-white flex items-start gap-3 transition ${n.threadId ? "cursor-pointer active:scale-[0.98]" : ""}`}
                 style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 8px rgba(58,46,42,0.04)" }}>
-                <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: gradient(n.type === "connected" ? TEAL : n.type === "friend_request" ? AMBER : CORAL), boxShadow: glow(n.type === "connected" ? TEAL : n.type === "friend_request" ? AMBER : CORAL, "33") }}>
-                  {n.type === "friend_request" ? <UserPlus size={14} color="#fff" /> : n.type === "reached_post" ? <MessageCircle size={14} color="#fff" /> : <Bell size={14} color="#fff" />}
+                <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: gradient(notifColor(n.type)), boxShadow: glow(notifColor(n.type), "33") }}>
+                  {n.type === "friend_request" ? <UserPlus size={14} color="#fff" />
+                    : n.type === "reached_post" ? <MessageCircle size={14} color="#fff" />
+                    : n.type === "access_requested" ? <EyeOff size={14} color="#fff" />
+                    : n.type === "access_granted" ? <Unlock size={14} color="#fff" />
+                    : <Bell size={14} color="#fff" />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-[13.5px]" style={{ color: CHARCOAL }}>{n.text}</p>
@@ -2237,22 +2330,50 @@ export default function HeartLeakPrototype() {
                     )}
                   </div>
 
-                  {/* private, unjudged thoughts — 300 word cap */}
+                  {/* "Only For People I Care About" — approval-gated, 300 word cap */}
                   <div className="rounded-2xl p-4 mb-4" style={{ backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}` }}>
-                    <p className="font-semibold text-[14px] mb-2 flex items-center gap-1.5" style={{ color: DARKTEXT }}><EyeOff size={13} style={{ color: LOGO_PURPLE }} /> Private, unjudged thoughts</p>
+                    <p className="font-semibold text-[14px] mb-2 flex items-center gap-1.5" style={{ color: DARKTEXT }}><EyeOff size={13} style={{ color: LOGO_PURPLE }} /> Only For People I Care About</p>
                     {editingConnectedProfile ? (
                       <>
-                        <textarea value={connectedDraft.privateBio} onChange={(e) => handlePrivateBioChange(e, setConnectedDraft)} rows={4} placeholder="Only you can see this"
+                        <textarea value={connectedDraft.privateBio} onChange={(e) => handlePrivateBioChange(e, setConnectedDraft)} rows={4} placeholder="Nobody can see this unless you approve their request"
                           className="w-full rounded-lg p-2.5 text-[13px] outline-none" style={{ backgroundColor: DARKBG, border: `1px solid ${DARKBORDER}`, color: DARKTEXT }} />
                         <p className="text-[11px] mt-1.5 text-right" style={{ color: DARKMUTED }}>{wordCount(connectedDraft.privateBio)}/{BIO_WORD_LIMIT} words</p>
                       </>
                     ) : (
                       <p className="text-[13px] leading-relaxed flex items-start gap-1.5" style={{ color: connectedProfile.privateBio ? DARKTEXT : DARKMUTED }}>
                         <Lock size={11} className="mt-0.5 shrink-0" />
-                        {connectedProfile.privateBio || "Only you can see this — nothing set yet."}
+                        {connectedProfile.privateBio || "Nothing set yet — connections can request access once you do."}
                       </p>
                     )}
                   </div>
+
+                  {/* people who've asked to see the section above */}
+                  {(() => {
+                    const pendingRequests = threads.filter((t) => t.incomingThoughtRequestStatus === "pending");
+                    if (pendingRequests.length === 0) return null;
+                    return (
+                      <div className="rounded-2xl p-4 mb-4" style={{ backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}` }}>
+                        <p className="font-semibold text-[14px] mb-2.5 flex items-center gap-1.5" style={{ color: DARKTEXT }}>
+                          <UserPlus size={13} style={{ color: LOGO_PURPLE }} /> Access requests
+                        </p>
+                        <div className="space-y-2">
+                          {pendingRequests.map((t) => (
+                            <div key={t.id} className="rounded-xl p-3 flex items-center justify-between gap-2" style={{ backgroundColor: DARKBG, border: `1px solid ${DARKBORDER}` }}>
+                              <span className="text-[13px] truncate" style={{ color: DARKTEXT }}>{t.realName}</span>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button onClick={() => respondThoughtAccess(t.otherUserId, "denied")} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ backgroundColor: DARKBORDER }}>
+                                  <X size={13} style={{ color: DARKMUTED }} />
+                                </button>
+                                <button onClick={() => respondThoughtAccess(t.otherUserId, "approved")} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: logoGradient() }}>
+                                  <Check size={13} color="#fff" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </>
               );
             })()}
