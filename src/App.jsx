@@ -552,6 +552,7 @@ export default function HeartLeakPrototype() {
         .from("connections")
         .select("id, requester_id, recipient_id, status, post_id, friend_requested_by, connected_at")
         .or(`requester_id.eq.${authUserId},recipient_id.eq.${authUserId}`)
+        .neq("status", "blocked")
         .order("created_at", { ascending: false });
 
       if (connectionError) {
@@ -1624,6 +1625,7 @@ export default function HeartLeakPrototype() {
                 <div className="space-y-2">
                   {replies.map((t) => {
                     const last = t.messages[t.messages.length - 1];
+                    if (!last) return null;
                     const lastText = last.deleted ? "Message deleted" : last.text;
                     return (
                       <button key={t.id} onClick={() => { setThreadOrigin("postInbox"); setActiveThreadId(t.id); setView("thread"); }}
@@ -1996,6 +1998,7 @@ export default function HeartLeakPrototype() {
               <div className="space-y-2">
                 {list.map((t) => {
                   const last = t.messages[t.messages.length - 1];
+                  if (!last) return null;
                   const lastText = last.deleted ? "Message deleted" : last.text;
                   const tag = t.friendStatus === "connected" ? getConnectionTag(daysConnected(t.connectedAt)) : null;
                   return (
