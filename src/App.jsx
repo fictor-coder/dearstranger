@@ -794,6 +794,18 @@ export default function HeartLeakPrototype() {
   }, [view, activeThreadId, authUserId]);
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
+
+  // #4/#5 fix — safety net. If we ever land on "thread" or "viewProfile"
+  // while the thread they point to doesn't exist anymore (blocked, deleted,
+  // removed by a realtime update, or replayed via browser back/swipe-back
+  // history), those screens have nothing to render and the app goes blank.
+  // Bounce back to Messages instead of showing an empty page.
+  useEffect(() => {
+    if ((view === "thread" || view === "viewProfile") && activeThreadId && !activeThread) {
+      setView("messages");
+    }
+  }, [view, activeThreadId, activeThread]);
+
   const threadForPost = (postId) => threads.find((t) => t.postId === postId);
   // #1 (new) — every reply thread on one of your own posts, for the owner-only inbox
   const repliesForPost = (postId) => threads.filter((t) => t.postId === postId);
@@ -1043,6 +1055,11 @@ export default function HeartLeakPrototype() {
       }
       await supabase.from("connections").update({ status: "blocked" }).eq("id", activeThread.id);
       setThreads((prev) => prev.filter((thread) => thread.id !== activeThread.id));
+      // #4/#5 fix — the thread we were just looking at no longer exists.
+      // Clear the pointer immediately so `activeThread` can't resolve to a
+      // stale/removed thread if the view ever lands back on "thread" or
+      // "viewProfile" (e.g. via browser back / swipe-back).
+      setActiveThreadId(null);
     }
     setBlockedUsers((prev) => (prev.includes(name) ? prev : [...prev, name]));
     setToast(`Blocked ${name}`);
