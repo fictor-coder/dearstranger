@@ -332,13 +332,30 @@ function Avatar({ name, pic, size = 40 }) {
 
 // A friendly, stable label for an anonymous account. It never reveals part of
 // the Supabase user ID, and the same account gets the same label everywhere.
-const ANON_ADJECTIVES = ["Calm", "Gentle", "Quiet", "Kind", "Soft", "Brave", "Warm", "Thoughtful"];
-const ANON_NOUNS = ["Willow", "Lantern", "Cloud", "River", "Sparrow", "Moon", "Pebble", "Dawn"];
-function anonymousHandleFor(id) {
+// Two independent hashes pick the adjective/noun so a 24x24 pool (576 combos)
+// stays well spread out instead of clustering the way a single shifted hash did.
+const ANON_ADJECTIVES = [
+  "Calm", "Gentle", "Quiet", "Kind", "Soft", "Brave", "Warm", "Thoughtful",
+  "Curious", "Steady", "Bright", "Patient", "Honest", "Mellow", "Cheerful", "Wistful",
+  "Serene", "Playful", "Earnest", "Tender", "Bold", "Dreamy", "Loyal", "Hopeful",
+];
+const ANON_NOUNS = [
+  "Willow", "Lantern", "Cloud", "River", "Sparrow", "Moon", "Pebble", "Dawn",
+  "Harbor", "Meadow", "Ember", "Comet", "Thistle", "Brook", "Falcon", "Aspen",
+  "Tide", "Grove", "Sundial", "Wren", "Canyon", "Prairie", "Nebula", "Fern",
+];
+function anonymousHandleFor(id, suffix = 0) {
   const compact = String(id || "anonymous").replaceAll("-", "");
-  let hash = 0;
-  for (const char of compact) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return `${ANON_ADJECTIVES[hash % ANON_ADJECTIVES.length]} ${ANON_NOUNS[(hash >>> 3) % ANON_NOUNS.length]}`;
+  let h1 = 0;
+  let h2 = 0;
+  for (const char of compact) {
+    const code = char.charCodeAt(0);
+    h1 = (h1 * 31 + code) >>> 0;
+    h2 = (h2 * 131 + code) >>> 0;
+  }
+  const label = `${ANON_ADJECTIVES[h1 % ANON_ADJECTIVES.length]} ${ANON_NOUNS[h2 % ANON_NOUNS.length]}`;
+  // suffix only kicks in if a caller explicitly needs to disambiguate a repeat.
+  return suffix ? `${label} ${suffix}` : label;
 }
 
 function Badge({ status }) {
