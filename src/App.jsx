@@ -451,6 +451,19 @@ export default function HeartLeakPrototype() {
   const [connectedProfile, setConnectedProfile] = useState(emptyProfile);
   const [onboardDraft, setOnboardDraft] = useState(emptyProfile);
 
+  // Optional email recovery: lets someone get back to this exact anonymous
+  // account from a new device/browser. Nothing here replaces the anonymous
+  // identity — it just links an email to it via Supabase's
+  // anonymous-user-to-permanent-user upgrade path.
+  const [linkedEmail, setLinkedEmail] = useState(null);
+  const [recoveryEmailDraft, setRecoveryEmailDraft] = useState("");
+  const [isSendingRecoveryLink, setIsSendingRecoveryLink] = useState(false);
+  const [recoveryLinkSent, setRecoveryLinkSent] = useState(false);
+  const [showEmailSignIn, setShowEmailSignIn] = useState(false);
+  const [signInEmailDraft, setSignInEmailDraft] = useState("");
+  const [isSendingSignInLink, setIsSendingSignInLink] = useState(false);
+  const [signInLinkSent, setSignInLinkSent] = useState(false);
+
   // #2/#4 — Profile tab: switch between the Anonymous and Connected profile pages
   // (each with its own background theme — connected is dark, anonymous is untouched)
   const [profileTab, setProfileTab] = useState("anon"); // "anon" | "connected"
@@ -490,6 +503,7 @@ export default function HeartLeakPrototype() {
           if (active) setIsProfileLoading(false);
           return;
         }
+        if (active) setLinkedEmail(user.email || null);
         setAuthUserId(user.id);
         return;
       }
@@ -525,6 +539,20 @@ export default function HeartLeakPrototype() {
 
     ensureAnonymousIdentity();
     return () => { active = false; };
+  }, []);
+
+  // Picks up two things automatically: (1) the linked-email confirmation
+  // redirect after "Save this account" in Settings, and (2) a full switch to
+  // a different (recovered) account after "Sign in with email" — Supabase
+  // swaps the active session in place, so this just follows it.
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setLinkedEmail(session?.user?.email || null);
+      if (session?.user?.id) {
+        setAuthUserId((prev) => (prev === session.user.id ? prev : session.user.id));
+      }
+    });
+    return () => sub.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -1186,6 +1214,48 @@ export default function HeartLeakPrototype() {
     return post.authorKeywords.filter((k) => myKeywords.includes(k)).slice(0, 3);
   }
 
+  // Link an email to the current anonymous account (Settings screen) so it
+  // can be recovered on another device later. Supabase upgrades the
+  // anonymous user to a permanent one on confirmation — same user id, so
+  // every post/connection/keyword already saved stays attached to it.
+  async function sendRecoveryLink() {
+    const email = recoveryEmailDraft.trim();
+    if (!email) { setToast("Enter an email address"); return; }
+    setIsSendingRecoveryLink(true);
+    const { error } = await supabase.auth.updateUser(
+      { email },
+      { emailRedirectTo: window.location.origin }
+    );
+    setIsSendingRecoveryLink(false);
+    if (error) {
+      console.error("Could not send recovery link:", error.message);
+      setToast(`Couldn't send that: ${error.message}`);
+      return;
+    }
+    setRecoveryLinkSent(true);
+    setToast("Check your inbox to confirm");
+  }
+
+  // Sign in on a new device/browser with a previously-linked email — sends a
+  // magic link; opening it here swaps this tab's session onto that account.
+  async function sendSignInLink() {
+    const email = signInEmailDraft.trim();
+    if (!email) { setToast("Enter an email address"); return; }
+    setIsSendingSignInLink(true);
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin },
+    });
+    setIsSendingSignInLink(false);
+    if (error) {
+      console.error("Could not send sign-in link:", error.message);
+      setToast(`Couldn't send that: ${error.message}`);
+      return;
+    }
+    setSignInLinkSent(true);
+    setToast("Check your inbox for a sign-in link");
+  }
+
   // #1 — onboarding: first-login form filling out the connected profile
   async function completeOnboarding() {
     if (!onboardDraft.username.trim() || !onboardDraft.age || !onboardDraft.gender) {
@@ -1432,6 +1502,31 @@ export default function HeartLeakPrototype() {
             className="mt-4 w-full py-3 rounded-xl font-medium text-sm active:scale-[0.98] transition flex items-center justify-center gap-2" style={{ background: logoGradient(), color: "#fff", boxShadow: `0 6px 16px ${LOGO_PURPLE}44` }}>
             Continue
           </button>
+
+          {/* Recovery path for a returning user opening the app on a new device/browser */}
+          {!showEmailSignIn ? (
+            <button onClick={() => setShowEmailSignIn(true)} className="mt-4 text-[12px] text-center underline underline-offset-2" style={{ color: DARKMUTED }}>
+              Used DearStrangers before? Sign in with email
+            </button>
+          ) : (
+            <div className="mt-4 rounded-xl p-3.5" style={{ backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}` }}>
+              {signInLinkSent ? (
+                <p className="text-[12px] leading-relaxed" style={{ color: DARKMUTED }}>
+                  Sent to {signInEmailDraft}. Open it on this device to get back into your account.
+                </p>
+              ) : (
+                <>
+                  <p className="text-[12px] mb-2" style={{ color: DARKMUTED }}>Enter the email you added earlier — we'll send a sign-in link.</p>
+                  <input value={signInEmailDraft} onChange={(e) => setSignInEmailDraft(e.target.value)} type="email" placeholder="you@example.com"
+                    className="w-full rounded-lg px-3 py-2 text-[13px] outline-none mb-2" style={{ backgroundColor: DARKBG, border: `1px solid ${DARKBORDER}`, color: DARKTEXT }} />
+                  <button onClick={sendSignInLink} disabled={isSendingSignInLink}
+                    className="w-full py-2 rounded-lg text-[12.5px] font-medium disabled:opacity-50 transition" style={{ background: logoGradient(), color: "#fff" }}>
+                    {isSendingSignInLink ? "Sending..." : "Send sign-in link"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2603,6 +2698,31 @@ export default function HeartLeakPrototype() {
                       Submit report
                     </button>
                   </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl bg-white overflow-hidden px-4 py-3.5" style={{ border: `1px solid ${MUTED}22` }}>
+                <p className="text-[13.5px] font-medium flex items-center gap-2.5 mb-1.5" style={{ color: CHARCOAL }}><Lock size={16} style={{ color: MUTED }} /> Account recovery</p>
+                {linkedEmail ? (
+                  <p className="text-[12px] leading-relaxed" style={{ color: MUTED }}>
+                    Recovery email: <span style={{ color: CHARCOAL, fontWeight: 500 }}>{linkedEmail}</span> — use it to sign back in from any device.
+                  </p>
+                ) : recoveryLinkSent ? (
+                  <p className="text-[12px] leading-relaxed" style={{ color: MUTED }}>
+                    Check {recoveryEmailDraft} and tap the link to confirm.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[12px] mb-2 leading-relaxed" style={{ color: MUTED }}>
+                      Add an email so you can get back into this exact account if you switch devices, clear your browser, or reinstall. Stays private — never shown to anyone.
+                    </p>
+                    <input value={recoveryEmailDraft} onChange={(e) => setRecoveryEmailDraft(e.target.value)} type="email" placeholder="you@example.com"
+                      className="w-full rounded-lg px-3 py-2 text-[13px] outline-none bg-white mb-2" style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+                    <button onClick={sendRecoveryLink} disabled={isSendingRecoveryLink}
+                      className="w-full py-2 rounded-lg text-[12.5px] font-medium disabled:opacity-50 transition" style={{ background: gradient(TEAL), color: "#fff" }}>
+                      {isSendingRecoveryLink ? "Sending..." : "Save this account"}
+                    </button>
+                  </>
                 )}
               </div>
 
