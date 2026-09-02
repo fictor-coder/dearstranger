@@ -421,11 +421,12 @@ export default function HeartLeakPrototype() {
   const [editingKeywords, setEditingKeywords] = useState(false);
   const [keywordsDraft, setKeywordsDraft] = useState("");
 
-  // #5 — "how HeartLeak works" disappears 2 days after account creation.
-  // Swap accountCreatedAt for the real signup timestamp from your auth/DB.
-  const [accountCreatedAt] = useState(() => Date.now());
-  const [demoOldAccount, setDemoOldAccount] = useState(false); // prototype-only preview toggle, remove in production
-  const daysSinceSignup = demoOldAccount ? 3 : (Date.now() - accountCreatedAt) / (1000 * 60 * 60 * 24);
+  // #5 — "how DearStrangers works" disappears 2 days after account creation.
+  // Loaded from profiles.created_at (see the keywords/created_at effect below).
+  // null until it loads, which keeps the tip hidden rather than flashing on
+  // for returning users while the real value is still in flight.
+  const [accountCreatedAt, setAccountCreatedAt] = useState(null);
+  const daysSinceSignup = accountCreatedAt === null ? null : (Date.now() - accountCreatedAt) / (1000 * 60 * 60 * 24);
 
   // #6 — settings
   const [blockedUsers, setBlockedUsers] = useState([]);
@@ -833,20 +834,22 @@ export default function HeartLeakPrototype() {
     loadPrivateProfile();
   }, [authUserId]);
 
-  // Own keyword tags — lives on the public "profiles" row (not private_profiles)
-  // since other accounts need to read it to compute a match against their feed.
+  // Own keyword tags + real signup date — both live on the public "profiles"
+  // row (keywords need to be readable by others for matching; created_at is
+  // set once by the DB on insert and never touched again).
   useEffect(() => {
     if (!authUserId) return;
 
-    supabase.from("profiles").select("keywords").eq("id", authUserId).maybeSingle()
+    supabase.from("profiles").select("keywords, created_at").eq("id", authUserId).maybeSingle()
       .then(({ data, error }) => {
         if (error) {
-          console.error("Could not load your keywords:", error.message);
+          console.error("Could not load your profile extras:", error.message);
           return;
         }
         const kws = data?.keywords || [];
         setMyKeywords(kws);
         setKeywordsDraft(kws.join(", "));
+        setAccountCreatedAt(data?.created_at ? new Date(data.created_at).getTime() : Date.now());
       });
   }, [authUserId]);
 
@@ -2478,7 +2481,7 @@ export default function HeartLeakPrototype() {
                   <p className="text-[11px] mt-1.5" style={{ color: MUTED }}>Always stays up — shown pinned at the top of Home.</p>
                 </div>
 
-                {daysSinceSignup < 2 && (
+                {daysSinceSignup !== null && daysSinceSignup < 2 && (
                   <div className="rounded-2xl p-4 bg-white mb-4" style={{ border: `1px solid ${MUTED}22` }}>
                     <p className="font-semibold text-[14px] mb-3" style={{ color: CHARCOAL }}>How DearStrangers works</p>
                     {[
@@ -2753,16 +2756,6 @@ export default function HeartLeakPrototype() {
                     </button>
                   </div>
                 )}
-              </div>
-
-              <div className="rounded-2xl bg-white overflow-hidden px-4 py-3.5" style={{ border: `1px dashed ${MUTED}44` }}>
-                <p className="text-[11px] font-semibold mb-1" style={{ color: MUTED }}>PROTOTYPE TESTING (remove before launch)</p>
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px]" style={{ color: CHARCOAL }}>Simulate account 2+ days old</span>
-                  <button onClick={() => setDemoOldAccount((s) => !s)} className="w-10 h-6 rounded-full flex items-center px-0.5 transition" style={{ backgroundColor: demoOldAccount ? TEAL : MUTED + "55" }}>
-                    <span className="w-5 h-5 rounded-full bg-white transition" style={{ marginLeft: demoOldAccount ? 16 : 0 }} />
-                  </button>
-                </div>
               </div>
             </div>
           </main>
