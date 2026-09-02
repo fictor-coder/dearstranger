@@ -732,15 +732,31 @@ export default function HeartLeakPrototype() {
   useEffect(() => {
     if (!authUserId) return;
 
-    async function loadPrivateProfile() {
-      const [{ data, error }, { data: thoughtData }] = await Promise.all([
+    async function fetchPrivateProfile() {
+      return Promise.all([
         supabase.from("private_profiles").select("username, age, gender, bio").eq("id", authUserId).maybeSingle(),
         // "Only For People I Care About" content now lives in its own table (access-controlled).
         supabase.from("private_thoughts").select("content").eq("id", authUserId).maybeSingle(),
       ]);
+    }
+
+    async function loadPrivateProfile() {
+      let [{ data, error }, { data: thoughtData }] = await fetchPrivateProfile();
+
+      // A stale/expired access token on reload can make this select fail even though
+      // the row exists. Force a session refresh and retry once before giving up —
+      // otherwise the user silently gets dropped back to onboarding.
+      if (error) {
+        console.error("Could not load private profile, retrying after session refresh:", error.message);
+        const { error: refreshError } = await supabase.auth.refreshSession();
+        if (!refreshError) {
+          [{ data, error }, { data: thoughtData }] = await fetchPrivateProfile();
+        }
+      }
 
       if (error) {
-        console.error("Could not load private profile:", error.message);
+        console.error("Could not load private profile after retry:", error.message);
+        setToast("Couldn't restore your profile — check your connection and refresh again");
         setIsProfileLoading(false);
         return;
       }
