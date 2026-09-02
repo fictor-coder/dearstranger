@@ -215,6 +215,20 @@ function wordCount(str) {
 }
 const BIO_WORD_LIMIT = 300;
 
+// Keywords are comma-separated, capped at 10, and matched case-insensitively —
+// so "SVVV", "svvv", and "SvVv" are all the same keyword to the matcher.
+const MAX_KEYWORDS = 10;
+function normalizeKeywords(raw) {
+  return Array.from(
+    new Set(
+      raw
+        .split(",")
+        .map((k) => k.trim().toLowerCase())
+        .filter(Boolean)
+    )
+  ).slice(0, MAX_KEYWORDS);
+}
+
 const seedPosts = [
   // #1 (anonymous) — pinned, permanent post; always stays up and is separately editable from the Anonymous profile
   { id: 0, author: "you", mood: "thoughtful", text: "This is the one thing I always want people to know about me: I'm trying, even on the days it doesn't look like it.", time: "Pinned", isMine: true, duration: "forever", isPermanent: true },
@@ -401,6 +415,12 @@ export default function HeartLeakPrototype() {
   const [myBio, setMyBio] = useState("");
   const [editingBio, setEditingBio] = useState(false);
 
+  // keyword matching — up to 10 tags on the anonymous profile; strangers who
+  // share a keyword see this account's posts boosted in their feed.
+  const [myKeywords, setMyKeywords] = useState([]);
+  const [editingKeywords, setEditingKeywords] = useState(false);
+  const [keywordsDraft, setKeywordsDraft] = useState("");
+
   // #5 — "how HeartLeak works" disappears 2 days after account creation.
   // Swap accountCreatedAt for the real signup timestamp from your auth/DB.
   const [accountCreatedAt] = useState(() => Date.now());
@@ -511,9 +531,11 @@ export default function HeartLeakPrototype() {
     if (!authUserId) return;
 
     async function loadSavedPosts() {
+      // profiles(keywords) rides along on the same query so the feed can
+      // boost/badge posts whose author shares a keyword with the viewer.
       const { data, error } = await supabase
         .from("posts")
-        .select("id, author_id, mood, body, expires_at, is_pinned, created_at")
+        .select("id, author_id, mood, body, expires_at, is_pinned, created_at, profiles(keywords)")
         .order("created_at", { ascending: false });
 
       if (error) {
@@ -545,6 +567,7 @@ export default function HeartLeakPrototype() {
             duration,
             isPermanent: post.is_pinned,
             expiresAt: post.expires_at,
+            authorKeywords: post.profiles?.keywords || [],
           };
         });
       // Demo/sample posts are prototype filler only. Once real posts are loaded,
@@ -780,6 +803,23 @@ export default function HeartLeakPrototype() {
     }
 
     loadPrivateProfile();
+  }, [authUserId]);
+
+  // Own keyword tags — lives on the public "profiles" row (not private_profiles)
+  // since other accounts need to read it to compute a match against their feed.
+  useEffect(() => {
+    if (!authUserId) return;
+
+    supabase.from("profiles").select("keywords").eq("id", authUserId).maybeSingle()
+      .then(({ data, error }) => {
+        if (error) {
+          console.error("Could not load your keywords:", error.message);
+          return;
+        }
+        const kws = data?.keywords || [];
+        setMyKeywords(kws);
+        setKeywordsDraft(kws.join(", "));
+      });
   }, [authUserId]);
 
   useEffect(() => {
@@ -1123,6 +1163,29 @@ export default function HeartLeakPrototype() {
     else setToast(`${BIO_WORD_LIMIT} word limit reached`);
   }
 
+  // keyword matching — comma-separated input, capped + de-duped + lowercased on save
+  async function saveKeywords() {
+    if (!authUserId) return;
+    const cleaned = normalizeKeywords(keywordsDraft);
+    const { error } = await supabase.from("profiles").update({ keywords: cleaned }).eq("id", authUserId);
+    if (error) {
+      console.error("Could not save keywords:", error.message);
+      setToast(`Keywords couldn't be saved: ${error.message}`);
+      return;
+    }
+    setMyKeywords(cleaned);
+    setKeywordsDraft(cleaned.join(", "));
+    setEditingKeywords(false);
+    setToast(cleaned.length ? "Keywords updated" : "Keywords cleared");
+  }
+
+  // Only the top few overlapping keywords are ever shown on a post, so a
+  // stranger sees "why this matched" without their whole tag list leaking.
+  function matchedKeywordsFor(post) {
+    if (!post.authorKeywords?.length || !myKeywords.length) return [];
+    return post.authorKeywords.filter((k) => myKeywords.includes(k)).slice(0, 3);
+  }
+
   // #1 — onboarding: first-login form filling out the connected profile
   async function completeOnboarding() {
     if (!onboardDraft.username.trim() || !onboardDraft.age || !onboardDraft.gender) {
@@ -1447,10 +1510,21 @@ export default function HeartLeakPrototype() {
 
         {view === "home" && (
           <main className="flex-1 overflow-y-auto px-5 py-4 space-y-3 pb-28">
-            {[...posts].sort((a, b) => (b.isPermanent ? 1 : 0) - (a.isPermanent ? 1 : 0)).map((p) => {
+            {[...posts]
+              .sort((a, b) => {
+                const pinnedDiff = (b.isPermanent ? 1 : 0) - (a.isPermanent ? 1 : 0);
+                if (pinnedDiff) return pinnedDiff;
+                // Among non-pinned posts, a shared keyword bumps a stranger's
+                // post up; ties keep the original recency order (stable sort).
+                const aMatch = matchedKeywordsFor(a).length > 0 ? 1 : 0;
+                const bMatch = matchedKeywordsFor(b).length > 0 ? 1 : 0;
+                return bMatch - aMatch;
+              })
+              .map((p) => {
               const m = MOODS[p.mood]; const MIcon = m.Icon; const t = threadForPost(p.id);
               const myReplies = p.isMine ? repliesForPost(p.id) : [];
               const dur = DURATIONS.find((d) => d.key === p.duration) || DURATIONS[3];
+              const matched = matchedKeywordsFor(p);
               return (
                 <div key={p.id} className="relative overflow-hidden rounded-2xl bg-white" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 10px rgba(58,46,42,0.05)" }}>
                   <div className="absolute left-0 top-0 bottom-0" style={{ width: 4, background: gradient(m.color) }} />
@@ -1478,6 +1552,13 @@ export default function HeartLeakPrototype() {
                       </div>
                     </div>
                     <p className="text-[14.5px] leading-relaxed" style={{ color: CHARCOAL }}>{p.text}</p>
+                    {!p.isMine && matched.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {matched.map((k) => (
+                          <span key={k} className="text-[10px] font-medium px-2 py-0.5 rounded-full" style={{ backgroundColor: TEAL + "18", color: TEAL }}>#{k}</span>
+                        ))}
+                      </div>
+                    )}
                     <div className="mt-3 pt-3 flex justify-end" style={{ borderTop: `1px solid ${MUTED}1A` }}>
                       {!p.isMine && !t && (
                         <button onClick={() => openOrStartThread(p.id)} className="text-[12px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 transition" style={{ background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL) }}>
@@ -2242,6 +2323,41 @@ export default function HeartLeakPrototype() {
                   ) : (
                     <p className="text-[13px] leading-relaxed" style={{ color: myBio ? CHARCOAL : MUTED }}>
                       {myBio || "Add something personal — this shows on your profile once you connect with someone."}
+                    </p>
+                  )}
+                </div>
+
+                {/* keyword matching — up to 10 tags; strangers sharing one see this profile's posts boosted */}
+                <div className="rounded-2xl p-4 bg-white mb-4" style={{ border: `1px solid ${MUTED}22` }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="font-semibold text-[14px] flex items-center gap-1.5" style={{ color: CHARCOAL }}><Tag size={13} style={{ color: TEAL }} /> Keywords</p>
+                    <button
+                      onClick={() => { if (!editingKeywords) setKeywordsDraft(myKeywords.join(", ")); setEditingKeywords((s) => !s); }}
+                      className="text-[11.5px] font-medium" style={{ color: PLUM }}>
+                      {editingKeywords ? "Cancel" : "Edit"}
+                    </button>
+                  </div>
+                  {editingKeywords ? (
+                    <>
+                      <input value={keywordsDraft} onChange={(e) => setKeywordsDraft(e.target.value)} placeholder="e.g. SVVV Indore, AIML, gaming, poetry"
+                        className="w-full rounded-xl p-3 text-[13.5px] outline-none bg-white" style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+                      <div className="flex items-center justify-between mt-1.5">
+                        <p className="text-[11px]" style={{ color: MUTED }}>Comma-separated · not case-sensitive</p>
+                        <p className="text-[11px]" style={{ color: MUTED }}>{normalizeKeywords(keywordsDraft).length}/{MAX_KEYWORDS}</p>
+                      </div>
+                      <div className="flex items-center justify-end gap-2 mt-2">
+                        <button onClick={saveKeywords} className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full" style={{ background: gradient(TEAL), color: "#fff" }}>Save</button>
+                      </div>
+                    </>
+                  ) : myKeywords.length ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {myKeywords.map((k) => (
+                        <span key={k} className="text-[11.5px] font-medium px-2.5 py-1 rounded-full" style={{ backgroundColor: TEAL + "18", color: TEAL }}>{k}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[13px]" style={{ color: MUTED }}>
+                      Add things like your college, hobbies, or interests — strangers with a matching keyword see your posts first.
                     </p>
                   )}
                 </div>
