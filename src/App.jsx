@@ -786,7 +786,7 @@ export default function HeartLeakPrototype() {
 
     async function fetchPrivateProfile() {
       return Promise.all([
-        supabase.from("private_profiles").select("username, age, gender, bio").eq("id", authUserId).maybeSingle(),
+        supabase.from("private_profiles").select("username, age, gender, bio, interests").eq("id", authUserId).maybeSingle(),
         // "Only For People I Care About" content now lives in its own table (access-controlled).
         supabase.from("private_thoughts").select("content").eq("id", authUserId).maybeSingle(),
       ]);
@@ -828,6 +828,7 @@ export default function HeartLeakPrototype() {
       setConnectedProfile(profile);
       setOnboardDraft(profile);
       setHasOnboarded(Boolean(profile.username && profile.age && profile.gender));
+      setMyBio(data.interests || "");
       setIsProfileLoading(false);
     }
 
@@ -1192,6 +1193,24 @@ export default function HeartLeakPrototype() {
     const val = e.target.value;
     if (wordCount(val) <= BIO_WORD_LIMIT) setMyBio(val);
     else setToast(`${BIO_WORD_LIMIT} word limit reached`);
+  }
+
+  // "Things I like" (Anonymous profile tab) — was previously local-only state
+  // with no save call at all, so it always reset on refresh. Persists to
+  // private_profiles.interests (not the public profiles table, since this is
+  // only meant to be revealed once someone connects, per the UI copy).
+  async function saveBio() {
+    if (!authUserId) return;
+    const trimmed = myBio.trim();
+    const { error } = await supabase.from("private_profiles").upsert({ id: authUserId, interests: trimmed || null });
+    if (error) {
+      console.error("Could not save Things I like:", error.message);
+      setToast(`Couldn't save that: ${error.message}`);
+      return;
+    }
+    setMyBio(trimmed);
+    setEditingBio(false);
+    setToast("Saved");
   }
 
   // keyword matching — comma-separated input, capped + de-duped + lowercased on save
@@ -2410,7 +2429,7 @@ export default function HeartLeakPrototype() {
                 <div className="rounded-2xl p-4 bg-white mb-4" style={{ border: `1px solid ${MUTED}22` }}>
                   <div className="flex items-center justify-between mb-2">
                     <p className="font-semibold text-[14px] flex items-center gap-1.5" style={{ color: CHARCOAL }}><Heart size={13} style={{ color: CORAL }} /> Things I like</p>
-                    <button onClick={() => setEditingBio((s) => !s)} className="text-[11.5px] font-medium" style={{ color: PLUM }}>{editingBio ? "Done" : "Edit"}</button>
+                    <button onClick={() => (editingBio ? saveBio() : setEditingBio(true))} className="text-[11.5px] font-medium" style={{ color: PLUM }}>{editingBio ? "Done" : "Edit"}</button>
                   </div>
                   {editingBio ? (
                     <>
