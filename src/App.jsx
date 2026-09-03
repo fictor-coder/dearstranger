@@ -786,7 +786,7 @@ export default function HeartLeakPrototype() {
 
     async function fetchPrivateProfile() {
       return Promise.all([
-        supabase.from("private_profiles").select("username, age, gender, bio, interests").eq("id", authUserId).maybeSingle(),
+        supabase.from("private_profiles").select("username, age, gender, bio, interests, avatar_url").eq("id", authUserId).maybeSingle(),
         // "Only For People I Care About" content now lives in its own table (access-controlled).
         supabase.from("private_thoughts").select("content").eq("id", authUserId).maybeSingle(),
       ]);
@@ -821,7 +821,7 @@ export default function HeartLeakPrototype() {
         username: data.username || "",
         age: data.age ? String(data.age) : "",
         gender: data.gender || "",
-        pic: null,
+        pic: data.avatar_url || null,
         bio: data.bio || "",
         privateBio: thoughtData?.content || "",
       };
@@ -1294,6 +1294,7 @@ export default function HeartLeakPrototype() {
       age: Number(onboardDraft.age),
       gender: onboardDraft.gender,
       bio: onboardDraft.bio.trim() || null,
+      ...(onboardDraft.pic?.startsWith("http") ? { avatar_url: onboardDraft.pic } : {}),
     });
     if (error) {
       console.error("Could not save private profile:", error.message);
@@ -1324,6 +1325,7 @@ export default function HeartLeakPrototype() {
       age: Number(connectedDraft.age),
       gender: connectedDraft.gender,
       bio: connectedDraft.bio.trim() || null,
+      ...(connectedDraft.pic?.startsWith("http") ? { avatar_url: connectedDraft.pic } : {}),
     });
     if (error) {
       console.error("Could not update private profile:", error.message);
@@ -1342,12 +1344,34 @@ export default function HeartLeakPrototype() {
     if (wordCount(val) <= BIO_WORD_LIMIT) targetSetter((prev) => ({ ...prev, privateBio: val }));
     else setToast(`${BIO_WORD_LIMIT} word limit reached`);
   }
-  function handlePicUpload(e, targetSetter) {
+  // Was previously local-preview-only (FileReader -> base64 into state) with
+  // no upload anywhere, so the photo always reverted after a refresh. The
+  // "avatars" storage bucket + RLS policies already existed and were ready
+  // to use — just never called from the frontend.
+  async function handlePicUpload(e, targetSetter) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => targetSetter((prev) => ({ ...prev, pic: reader.result }));
-    reader.readAsDataURL(file);
+    if (!authUserId) { setToast("Still connecting — try again in a moment"); return; }
+
+    // Instant local preview while the upload runs.
+    const localPreview = URL.createObjectURL(file);
+    targetSetter((prev) => ({ ...prev, pic: localPreview }));
+
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${authUserId}/avatar.${ext}`;
+    const { error: uploadError } = await supabase.storage
+      .from("avatars")
+      .upload(path, file, { upsert: true, cacheControl: "3600" });
+    if (uploadError) {
+      console.error("Could not upload avatar:", uploadError.message);
+      setToast(`Photo upload failed: ${uploadError.message}`);
+      return;
+    }
+
+    const { data: publicUrlData } = supabase.storage.from("avatars").getPublicUrl(path);
+    // Cache-bust so the new photo shows immediately even though the path is unchanged.
+    const publicUrl = `${publicUrlData.publicUrl}?v=${Date.now()}`;
+    targetSetter((prev) => ({ ...prev, pic: publicUrl }));
   }
 
   // #1 (anonymous) — edit the single pinned permanent post
