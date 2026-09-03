@@ -1792,10 +1792,10 @@ export default function HeartLeakPrototype() {
 
                 <div className="rounded-2xl bg-white p-4" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 10px rgba(58,46,42,0.05)" }}>
                   <p className="text-[13px] font-semibold mb-3 flex items-center gap-1.5" style={{ color: PLUM }}>
-                    <Quote size={13} /> Woh chhoti si baat jo sirf tumhe pata hai
+                    <Quote size={13} /> Thoda sa background (jitna pata hai utna kaafi hai)
                   </p>
                   <div className="mb-3">
-                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Unke baare mein kya aur kitna jaante ho?</label>
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Inke baare mein kitna pata hai? (bilkul bhi nahi pata to bhi chalega)</label>
                     <textarea rows={2} value={openerForm.howWellKnown}
                       onChange={(e) => setOpenerForm((p) => ({ ...p, howWellKnown: e.target.value }))}
                       placeholder="e.g. bas naam pata hai, kabhi baat nahi hui"
@@ -1803,7 +1803,7 @@ export default function HeartLeakPrototype() {
                       style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
                   </div>
                   <div>
-                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Kuch specific notice kiya?</label>
+                    <label className="block text-[11.5px] font-medium mb-1.5" style={{ color: MUTED }}>Kuch dikha jo mention kar sakein? (optional)</label>
                     <textarea rows={2} value={openerForm.noticedSomething}
                       onChange={(e) => setOpenerForm((p) => ({ ...p, noticedSomething: e.target.value }))}
                       placeholder="e.g. unki story mein trekking ki photo dekhi thi"
