@@ -5,6 +5,7 @@ import {
   PenLine, Clock, Settings, LogOut, Trash2, Flag, UserX, Pencil, X,
   SmilePlus, Paperclip, ChevronRight, ShieldCheck, Users, Inbox,
   Award, Quote, StickyNote, Tag, Camera, Pin, EyeOff, Unlock, MessageCircleHeart, RefreshCw, Copy, CheckCheck,
+  Download, FileText, MessageSquareWarning,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -436,6 +437,8 @@ export default function HeartLeakPrototype() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [loggedOut, setLoggedOut] = useState(false);
   const [accountDeleted, setAccountDeleted] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [isExportingData, setIsExportingData] = useState(false);
 
   // #10 / view-profile page for the other person in a thread
   const [viewProfileConfirm, setViewProfileConfirm] = useState(null); // "block" | "report" | null
@@ -1258,6 +1261,45 @@ export default function HeartLeakPrototype() {
     setToast("Check your inbox to confirm");
   }
 
+  // DPDP Act — right to erasure: actually deletes every row tied to this
+  // account (profile, posts, messages, connections, etc.) and the auth user
+  // itself via a server-side function, then signs out.
+  async function handleDeleteAccount() {
+    setIsDeletingAccount(true);
+    const { error } = await supabase.rpc("delete_own_account");
+    setIsDeletingAccount(false);
+    if (error) {
+      console.error("Account deletion failed:", error.message);
+      setToast(`Couldn't delete your account: ${error.message}`);
+      return;
+    }
+    await supabase.auth.signOut();
+    setAccountDeleted(true);
+  }
+
+  // DPDP Act — right to data portability: fetches a full JSON snapshot of
+  // everything this account owns and downloads it to the user's device.
+  async function handleExportData() {
+    setIsExportingData(true);
+    const { data, error } = await supabase.rpc("export_my_data");
+    setIsExportingData(false);
+    if (error) {
+      console.error("Data export failed:", error.message);
+      setToast(`Couldn't export your data: ${error.message}`);
+      return;
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dearstrangers-data-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setToast("Your data export has downloaded");
+  }
+
   // Sign in on a new device/browser with a previously-linked email — sends a
   // magic link; opening it here swaps this tab's session onto that account.
   async function sendSignInLink() {
@@ -1456,7 +1498,7 @@ export default function HeartLeakPrototype() {
 
   const myPosts = posts.filter((p) => p.isMine && !p.isPermanent);
   const permanentPost = posts.find((p) => p.isPermanent);
-  const FULLSCREEN_VIEWS = ["newReply", "thread", "compose", "viewProfile", "settings", "postInbox"];
+  const FULLSCREEN_VIEWS = ["newReply", "thread", "compose", "viewProfile", "settings", "postInbox", "privacyPolicy", "termsOfService", "grievance"];
   // #4 — only the Connected profile page goes dark; every other screen (incl. Anonymous profile) is untouched
   const darkMode = view === "profile" && profileTab === "connected";
 
@@ -2793,13 +2835,92 @@ export default function HeartLeakPrototype() {
                     <p className="text-[12px] mb-2" style={{ color: "#C0392B" }}>This can't be undone. Type DELETE to confirm.</p>
                     <input value={deleteConfirmText} onChange={(e) => setDeleteConfirmText(e.target.value)} placeholder="DELETE"
                       className="w-full rounded-lg px-3 py-2 text-[13px] outline-none bg-white mb-2" style={{ border: "1px solid #C0392B55", color: CHARCOAL }} />
-                    <button disabled={deleteConfirmText !== "DELETE"} onClick={() => setAccountDeleted(true)}
+                    <button disabled={deleteConfirmText !== "DELETE" || isDeletingAccount} onClick={handleDeleteAccount}
                       className="w-full py-2.5 rounded-full text-[13px] font-medium disabled:opacity-35 transition" style={{ backgroundColor: "#C0392B", color: "#fff" }}>
-                      Permanently delete my account
+                      {isDeletingAccount ? "Deleting..." : "Permanently delete my account"}
                     </button>
                   </div>
                 )}
               </div>
+
+              <div className="rounded-2xl bg-white overflow-hidden px-4 py-3.5" style={{ border: `1px solid ${MUTED}22` }}>
+                <p className="text-[13.5px] font-medium flex items-center gap-2.5 mb-1.5" style={{ color: CHARCOAL }}><Download size={16} style={{ color: MUTED }} /> Export your data</p>
+                <p className="text-[12px] mb-2 leading-relaxed" style={{ color: MUTED }}>
+                  Download a copy of everything tied to your account — profile, posts, connections, and messages you've sent — as a JSON file.
+                </p>
+                <button onClick={handleExportData} disabled={isExportingData}
+                  className="w-full py-2 rounded-lg text-[12.5px] font-medium disabled:opacity-50 transition" style={{ background: gradient(TEAL), color: "#fff" }}>
+                  {isExportingData ? "Preparing export..." : "Export my data"}
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-white overflow-hidden" style={{ border: `1px solid ${MUTED}22` }}>
+                <button onClick={() => setView("privacyPolicy")} className="w-full px-4 py-3.5 flex items-center justify-between">
+                  <span className="text-[13.5px] flex items-center gap-2.5" style={{ color: CHARCOAL }}><ShieldCheck size={16} style={{ color: MUTED }} /> Privacy Policy</span>
+                  <ChevronRight size={15} style={{ color: MUTED }} />
+                </button>
+                <div className="h-px" style={{ backgroundColor: MUTED + "1A" }} />
+                <button onClick={() => setView("termsOfService")} className="w-full px-4 py-3.5 flex items-center justify-between">
+                  <span className="text-[13.5px] flex items-center gap-2.5" style={{ color: CHARCOAL }}><FileText size={16} style={{ color: MUTED }} /> Terms of Service</span>
+                  <ChevronRight size={15} style={{ color: MUTED }} />
+                </button>
+                <div className="h-px" style={{ backgroundColor: MUTED + "1A" }} />
+                <button onClick={() => setView("grievance")} className="w-full px-4 py-3.5 flex items-center justify-between">
+                  <span className="text-[13.5px] flex items-center gap-2.5" style={{ color: CHARCOAL }}><MessageSquareWarning size={16} style={{ color: MUTED }} /> Grievance Redressal</span>
+                  <ChevronRight size={15} style={{ color: MUTED }} />
+                </button>
+              </div>
+            </div>
+          </main>
+        )}
+
+        {(view === "privacyPolicy" || view === "termsOfService" || view === "grievance") && (
+          <main className="flex-1 flex flex-col overflow-y-auto">
+            <header className="px-4 pt-6 pb-3 flex items-center gap-3 border-b" style={{ borderColor: MUTED + "22" }}>
+              <button onClick={() => setView("settings")}><ArrowLeft size={20} color={CHARCOAL} /></button>
+              <span className="text-sm font-medium" style={{ color: CHARCOAL }}>
+                {view === "privacyPolicy" ? "Privacy Policy" : view === "termsOfService" ? "Terms of Service" : "Grievance Redressal"}
+              </span>
+            </header>
+            <div className="px-5 py-5 flex-1 text-[13px] leading-relaxed space-y-3" style={{ color: CHARCOAL }}>
+              <p className="text-[11.5px]" style={{ color: MUTED }}>Last updated: 9 September 2026</p>
+
+              {view === "privacyPolicy" && (
+                <>
+                  <p><strong>What we collect.</strong> An anonymous handle, any bio/interests/keywords you add, posts and messages you write, and — only if you choose to add one — a recovery email. We never require your real name to use DearStrangers.</p>
+                  <p><strong>How we use it.</strong> Solely to run the app: matching you with others by keywords, delivering messages and notifications, and letting you recover your account. We do not sell your data or share it with advertisers.</p>
+                  <p><strong>Who can see what.</strong> Your real identity stays hidden from other users until you and they mutually connect. Private thoughts are visible only to people you've explicitly approved.</p>
+                  <p><strong>Storage & security.</strong> Data is stored with Supabase (PostgreSQL) with row-level security restricting access to your own data.</p>
+                  <p><strong>Your rights under the DPDP Act, 2023.</strong> You can access, correct, export, or permanently delete your data at any time from Settings. Deletion is immediate and irreversible — it removes your profile, posts, messages, and account from our systems.</p>
+                  <p><strong>Retention.</strong> We keep your data only as long as your account is active. Deleted accounts are purged immediately, not archived.</p>
+                  <p><strong>Contact.</strong> For any privacy question, reach the Grievance Officer listed under Grievance Redressal.</p>
+                </>
+              )}
+
+              {view === "termsOfService" && (
+                <>
+                  <p><strong>Eligibility.</strong> You must be at least 14 years old to use DearStrangers.</p>
+                  <p><strong>Your conduct.</strong> No harassment, hate speech, impersonation, spam, or illegal content. Violations may lead to a block, content removal, or account termination.</p>
+                  <p><strong>Anonymity is a privilege, not a shield.</strong> Anonymity is meant to help people open up safely — misusing it to harm others isn't allowed, and reported abuse will be investigated.</p>
+                  <p><strong>Your content.</strong> You own what you post. By posting, you allow DearStrangers to display it to other users as part of the normal functioning of the app.</p>
+                  <p><strong>No warranty.</strong> DearStrangers is provided "as is." We work to keep it safe and available but can't guarantee uninterrupted service.</p>
+                  <p><strong>Termination.</strong> You may delete your account at any time from Settings. We may suspend accounts that violate these terms.</p>
+                  <p><strong>Changes.</strong> We may update these terms; continued use after an update means you accept the changes.</p>
+                </>
+              )}
+
+              {view === "grievance" && (
+                <>
+                  <p>In accordance with the Digital Personal Data Protection Act, 2023, DearStrangers has designated a Grievance Officer to address concerns about your personal data.</p>
+                  <div className="rounded-xl p-3.5" style={{ border: `1px solid ${MUTED}33` }}>
+                    <p className="font-medium" style={{ color: CHARCOAL }}>Grievance Officer</p>
+                    <p style={{ color: MUTED }}>Email: <a href="mailto:ashuuu1714@gmail.com" style={{ color: TEAL, textDecoration: "underline" }}>ashuuu1714@gmail.com</a></p>
+                    <p style={{ color: MUTED }}>Response time: within 7 business days</p>
+                  </div>
+                  <p>You can write in about: incorrect or unwanted data collection, a request to access, correct, or delete your data that wasn't handled properly, unresolved harassment/abuse reports, or any other data-protection concern.</p>
+                  <p>Please include your anonymous handle and as much detail as possible so we can look into it quickly.</p>
+                </>
+              )}
             </div>
           </main>
         )}
