@@ -412,6 +412,8 @@ export default function HeartLeakPrototype() {
   const [toast, setToast] = useState("");
   const bottomRef = useRef(null);
   const homeFeedRef = useRef(null);
+  const navRefs = useRef([]);
+  const [navPillStyle, setNavPillStyle] = useState({ opacity: 0 });
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== "undefined" ? !navigator.onLine : false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1532,6 +1534,32 @@ export default function HeartLeakPrototype() {
     { key: "opener", label: "Opener", Icon: MessageCircleHeart },
     { key: "profile", label: "Profile", Icon: User },
   ];
+
+  useEffect(() => {
+    function positionNavPill() {
+      const idx = TABS.findIndex((t) => t.key === view);
+      const btn = navRefs.current[idx];
+      const navEl = btn?.closest("nav");
+      if (!btn || !navEl) {
+        setNavPillStyle((s) => ({ ...s, opacity: 0 }));
+        return;
+      }
+      const btnRect = btn.getBoundingClientRect();
+      const navRect = navEl.getBoundingClientRect();
+      setNavPillStyle({
+        opacity: 1,
+        width: btnRect.width,
+        height: btnRect.height,
+        transform: `translate(${btnRect.left - navRect.left}px, ${btnRect.top - navRect.top}px)`,
+      });
+    }
+    const raf = requestAnimationFrame(positionNavPill);
+    window.addEventListener("resize", positionNavPill);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", positionNavPill);
+    };
+  }, [view]);
 
   function generateOpeners() {
     setIsGeneratingOpeners(true);
@@ -3182,17 +3210,18 @@ export default function HeartLeakPrototype() {
         )}
 
         {!FULLSCREEN_VIEWS.includes(view) && (
-          <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md px-6 py-2.5 flex items-center justify-between" style={{ backgroundColor: "#fff", borderTop: `1px solid ${MUTED}22`, boxShadow: "0 -4px 16px rgba(58,46,42,0.05)" }}>
-            {TABS.slice(0, 2).map(({ key, label, Icon }) => (
-              <button key={key} onClick={() => setView(key)} className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl transition" style={{ color: view === key ? CORAL : MUTED, backgroundColor: view === key ? CORAL + "12" : "transparent" }}>
+          <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md px-6 py-2.5 flex items-center justify-between relative" style={{ backgroundColor: "#fff", borderTop: `1px solid ${MUTED}22`, boxShadow: "0 -4px 16px rgba(58,46,42,0.05)" }}>
+            <div className="absolute rounded-xl pointer-events-none" style={{ ...navPillStyle, backgroundColor: CORAL + "12", transition: "transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease" }} />
+            {TABS.slice(0, 2).map(({ key, label, Icon }, i) => (
+              <button key={key} ref={(el) => (navRefs.current[i] = el)} onClick={() => setView(key)} className="relative z-10 flex flex-col items-center gap-1 px-3 py-1 rounded-xl transition-colors" style={{ color: view === key ? CORAL : MUTED }}>
                 <Icon size={20} /><span className="text-[10px] font-medium">{label}</span>
               </button>
             ))}
-            <button onClick={() => setView("compose")} className="rounded-full flex items-center justify-center -mt-6 active:scale-95 hover:opacity-80 transition" style={{ background: gradient(AMBER), width: 52, height: 52, boxShadow: glow(AMBER, "77") }}>
+            <button onClick={() => setView("compose")} className="relative z-10 rounded-full flex items-center justify-center -mt-6 active:scale-95 hover:opacity-80 transition" style={{ background: gradient(AMBER), width: 52, height: 52, boxShadow: glow(AMBER, "77") }}>
               <PenLine size={20} color="#4A3708" />
             </button>
-            {TABS.slice(2).map(({ key, label, Icon }) => (
-              <button key={key} onClick={() => setView(key)} className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl transition" style={{ color: view === key ? CORAL : MUTED, backgroundColor: view === key ? CORAL + "12" : "transparent" }}>
+            {TABS.slice(2).map(({ key, label, Icon }, i) => (
+              <button key={key} ref={(el) => (navRefs.current[i + 2] = el)} onClick={() => setView(key)} className="relative z-10 flex flex-col items-center gap-1 px-3 py-1 rounded-xl transition-colors" style={{ color: view === key ? CORAL : MUTED }}>
                 <Icon size={20} /><span className="text-[10px] font-medium">{label}</span>
               </button>
             ))}
