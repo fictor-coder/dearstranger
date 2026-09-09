@@ -6,3 +6,15 @@ body,
   min-height: 100%;
   margin: 0;
 }
+
+/* #8 — visible keyboard focus rings on every interactive element */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+

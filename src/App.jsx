@@ -5,7 +5,7 @@ import {
   PenLine, Clock, Settings, LogOut, Trash2, Flag, UserX, Pencil, X,
   SmilePlus, Paperclip, ChevronRight, ShieldCheck, Users, Inbox,
   Award, Quote, StickyNote, Tag, Camera, Pin, EyeOff, Unlock, MessageCircleHeart, RefreshCw, Copy, CheckCheck,
-  Download, FileText, MessageSquareWarning,
+  Download, FileText, MessageSquareWarning, WifiOff, ArrowUp, Search,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -45,6 +45,12 @@ function shade(hex, amt) {
   b = Math.min(255, Math.max(0, b));
   return "#" + (0x1000000 + (r << 16) + (g << 8) + b).toString(16).slice(1);
 }
+// #19/#20 — a toast is "error" styled if its copy reads as a failure message
+function isErrorToast(msg) {
+  if (!msg) return false;
+  return /couldn.?t|can.?t be|cannot|failed|issue:|limit reached|please rephrase/i.test(msg);
+}
+
 function gradient(hex, angle = 135) {
   return `linear-gradient(${angle}deg, ${hex}, ${shade(hex, -36)})`;
 }
@@ -393,7 +399,9 @@ export default function HeartLeakPrototype() {
   const [notifications, setNotifications] = useState([]);
   const [activeThreadId, setActiveThreadId] = useState(null);
   const [activePostId, setActivePostId] = useState(null);
-  const [composeText, setComposeText] = useState("");
+  const [composeText, setComposeText] = useState(() => {
+    try { return localStorage.getItem("ds_draft_compose") || ""; } catch { return ""; }
+  });
   const [composeMood, setComposeMood] = useState("thoughtful");
   const [composeDuration, setComposeDuration] = useState("12h");
   const [openerForm, setOpenerForm] = useState(OPENER_FORM_DEFAULTS);
@@ -403,6 +411,12 @@ export default function HeartLeakPrototype() {
   const [msgDraft, setMsgDraft] = useState("");
   const [toast, setToast] = useState("");
   const bottomRef = useRef(null);
+  const homeFeedRef = useRef(null);
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const [isOffline, setIsOffline] = useState(typeof navigator !== "undefined" ? !navigator.onLine : false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [undoAction, setUndoAction] = useState(null); // { label, run: () => void }
   const [greeting] = useState(() => GREETINGS[Math.floor(Math.random() * GREETINGS.length)]);
 
   // #2 — emoji picker + lightweight extras in the chat composer
@@ -558,6 +572,49 @@ export default function HeartLeakPrototype() {
     });
     return () => sub.subscription.unsubscribe();
   }, []);
+
+  // #7 — offline banner
+  useEffect(() => {
+    const goOnline = () => setIsOffline(false);
+    const goOffline = () => setIsOffline(true);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  // #2 — undo toasts auto-expire after a few seconds
+  useEffect(() => {
+    if (!undoAction) return;
+    const t = setTimeout(() => setUndoAction(null), 5000);
+    return () => clearTimeout(t);
+  }, [undoAction]);
+
+  // #1 — ⌘K / Ctrl+K opens a quick search over posts
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((s) => !s);
+      }
+      if (e.key === "Escape") setSearchOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // #6 — autosave the compose draft so it survives an accidental close/refresh
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        if (composeText.trim()) localStorage.setItem("ds_draft_compose", composeText);
+        else localStorage.removeItem("ds_draft_compose");
+      } catch {}
+    }, 400);
+    return () => clearTimeout(t);
+  }, [composeText]);
 
   useEffect(() => {
     if (!authUserId) return;
@@ -1066,17 +1123,27 @@ export default function HeartLeakPrototype() {
       setToast(`Message couldn't be deleted: ${error.message}`);
       return;
     }
-    setThreads((prev) => prev.map((thread) => thread.id === activeThread.id
+    const threadIdAtDelete = activeThread.id;
+    setThreads((prev) => prev.map((thread) => thread.id === threadIdAtDelete
       ? { ...thread, messages: thread.messages.map((message) => message.id === m.id ? { ...message, deleted: true, text: "" } : message) }
       : thread));
     setOpenMsgMenu(null);
     setToast("Message deleted");
-    return;
-    setThreads((prev) => prev.map((t) => t.id === activeThread.id
-      ? { ...t, messages: t.messages.map((x) => (x.id === m.id ? { ...x, deleted: true, text: "" } : x)) }
-      : t));
-    setOpenMsgMenu(null);
-    setToast("Message deleted");
+    setUndoAction({
+      label: "Undo",
+      run: async () => {
+        const { error: undoError } = await supabase.from("messages")
+          .update({ deleted_at: null })
+          .eq("id", m.id)
+          .eq("sender_id", authUserId);
+        if (undoError) { setToast(`Couldn't undo: ${undoError.message}`); return; }
+        setThreads((prev) => prev.map((thread) => thread.id === threadIdAtDelete
+          ? { ...thread, messages: thread.messages.map((message) => message.id === m.id ? { ...message, deleted: false, text: m.text } : message) }
+          : thread));
+        setToast("Message restored");
+        setUndoAction(null);
+      },
+    });
   }
   function insertEmoji(e) {
     setMsgDraft((prev) => prev + e);
@@ -1498,17 +1565,28 @@ export default function HeartLeakPrototype() {
 
   const myPosts = posts.filter((p) => p.isMine && !p.isPermanent);
   const permanentPost = posts.find((p) => p.isPermanent);
-  const FULLSCREEN_VIEWS = ["newReply", "thread", "compose", "viewProfile", "settings", "postInbox", "privacyPolicy", "termsOfService", "grievance"];
+  const FULLSCREEN_VIEWS = ["newReply", "thread", "compose", "viewProfile", "settings", "postInbox", "privacyPolicy", "termsOfService", "grievance", "faqs"];
   // #4 — only the Connected profile page goes dark; every other screen (incl. Anonymous profile) is untouched
   const darkMode = view === "profile" && profileTab === "connected";
 
   // #1 — first-login onboarding: fill out your connected profile before entering the app
   if (isProfileLoading) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center" style={{ backgroundColor: DARKBG }}>
-        <div className="flex flex-col items-center gap-3" style={{ color: DARKTEXT }}>
-          <Logo height={44} />
-          <p className="text-[13px]" style={{ color: DARKMUTED }}>Opening your private space...</p>
+      <div className="min-h-screen w-full flex justify-center" style={{ backgroundColor: DARKBG }}>
+        <div className="w-full max-w-md min-h-screen flex flex-col px-5 py-6">
+          <div className="flex items-center gap-2 mb-6">
+            <Logo height={24} />
+            <div className="h-3 w-28 rounded-full animate-pulse" style={{ backgroundColor: DARKSURFACE }} />
+          </div>
+          {/* #4 — skeleton placeholders while the private space opens */}
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="rounded-2xl p-4 mb-3 animate-pulse" style={{ backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}` }}>
+              <div className="h-3 w-20 rounded-full mb-3" style={{ backgroundColor: DARKBORDER }} />
+              <div className="h-3 w-full rounded-full mb-2" style={{ backgroundColor: DARKBORDER }} />
+              <div className="h-3 w-3/4 rounded-full" style={{ backgroundColor: DARKBORDER }} />
+            </div>
+          ))}
+          <p className="text-[12px] text-center mt-2" style={{ color: DARKMUTED }}>Opening your private space...</p>
         </div>
       </div>
     );
@@ -1519,8 +1597,12 @@ export default function HeartLeakPrototype() {
       <div className="min-h-screen w-full flex justify-center" style={{ backgroundImage: `radial-gradient(circle at 50% 0%, ${LOGO_PURPLE}26, ${DARKBG} 55%)`, backgroundColor: DARKBG }}>
         <div className="w-full max-w-md min-h-screen flex flex-col px-6 py-8" style={{ fontFamily: "ui-sans-serif, system-ui" }}>
           {toast && (
-            <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 text-sm px-4 py-2 rounded-full shadow-lg flex items-center gap-2 max-w-[90%]" style={{ backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}`, color: DARKTEXT }}>
-              <Check size={14} style={{ color: LOGO_PURPLE }} className="shrink-0" /><span>{toast}</span>
+            <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 text-sm px-4 py-2 rounded-full shadow-lg flex items-center gap-2 max-w-[90%]"
+              style={isErrorToast(toast)
+                ? { backgroundColor: "#C0392B", color: "#fff" }
+                : { backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}`, color: DARKTEXT }}>
+              {isErrorToast(toast) ? <X size={14} className="shrink-0" /> : <Check size={14} style={{ color: LOGO_PURPLE }} className="shrink-0" />}
+              <span>{toast}</span>
             </div>
           )}
           <div className="flex flex-col items-center text-center mb-6">
@@ -1529,9 +1611,27 @@ export default function HeartLeakPrototype() {
             <p className="text-[13px] mt-1" style={{ color: DARKMUTED }}>Set up your profile before you dive in. You can edit this any time.</p>
           </div>
 
+          {/* #15 — profile completeness progress bar */}
+          {(() => {
+            const fields = [onboardDraft.pic, onboardDraft.username, onboardDraft.age, onboardDraft.gender, onboardDraft.bio];
+            const filled = fields.filter((f) => String(f || "").trim()).length;
+            const pct = Math.round((filled / fields.length) * 100);
+            return (
+              <div className="mb-5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[11px]" style={{ color: DARKMUTED }}>Profile completeness</span>
+                  <span className="text-[11px] font-medium" style={{ color: DARKTEXT }}>{pct}%</span>
+                </div>
+                <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ backgroundColor: DARKBORDER }}>
+                  <div className="h-full rounded-full transition-all duration-300" style={{ width: `${pct}%`, background: logoGradient() }} />
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="flex-1 space-y-4">
             <div className="flex flex-col items-center">
-              <label className="relative cursor-pointer active:scale-95 transition">
+              <label className="relative cursor-pointer active:scale-95 hover:opacity-80 transition">
                 <input type="file" accept="image/*" className="hidden" onChange={(e) => handlePicUpload(e, setOnboardDraft)} />
                 {onboardDraft.pic ? (
                   <img src={onboardDraft.pic} alt="" className="rounded-full object-cover" style={{ width: 84, height: 84 }} />
@@ -1629,7 +1729,7 @@ export default function HeartLeakPrototype() {
           <p className="font-semibold text-[17px] mt-3 mb-1" style={{ color: CHARCOAL }}>Your account has been deleted</p>
           <p className="text-[13px] mb-6" style={{ color: MUTED }}>Everything you shared on DearStrangers is gone. We're sorry to see you go.</p>
           <button onClick={() => { setAccountDeleted(false); setDeleteConfirmText(""); setSettingsPanel(null); setView("home"); }}
-            className="px-5 py-2.5 rounded-full text-sm font-medium active:scale-95 transition" style={{ background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL) }}>
+            className="px-5 py-2.5 rounded-full text-sm font-medium active:scale-95 hover:opacity-80 transition" style={{ background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL) }}>
             Start over (demo)
           </button>
         </div>
@@ -1644,7 +1744,7 @@ export default function HeartLeakPrototype() {
           <p className="font-semibold text-[17px] mt-3 mb-1" style={{ color: CHARCOAL }}>You've been logged out</p>
           <p className="text-[13px] mb-6" style={{ color: MUTED }}>Come back whenever you need to let something out.</p>
           <button onClick={() => { setLoggedOut(false); setSettingsPanel(null); setView("home"); }}
-            className="px-5 py-2.5 rounded-full text-sm font-medium active:scale-95 transition" style={{ background: gradient(AMBER), color: "#4A3708", boxShadow: glow(AMBER) }}>
+            className="px-5 py-2.5 rounded-full text-sm font-medium active:scale-95 hover:opacity-80 transition" style={{ background: gradient(AMBER), color: "#4A3708", boxShadow: glow(AMBER) }}>
             Log back in
           </button>
         </div>
@@ -1658,22 +1758,78 @@ export default function HeartLeakPrototype() {
       : { backgroundImage: `radial-gradient(circle at 50% 0%, ${CORAL}0D, ${CREAM} 55%)`, backgroundColor: CREAM }}>
       <div className="w-full max-w-md min-h-screen flex flex-col relative" style={{ color: darkMode ? DARKTEXT : CHARCOAL, fontFamily: "ui-sans-serif, system-ui" }}>
 
+        {isOffline && (
+          <div className="sticky top-0 z-30 px-4 py-2 text-center text-[12px] font-medium flex items-center justify-center gap-1.5" style={{ backgroundColor: "#C0392B", color: "#fff" }}>
+            <WifiOff size={13} /> You're offline — some things may not update
+          </div>
+        )}
+
+        {searchOpen && (
+          <div className="fixed inset-0 z-40 flex items-start justify-center pt-20 px-5" style={{ backgroundColor: "rgba(58,46,42,0.45)" }}
+            onClick={() => setSearchOpen(false)}>
+            <div className="w-full max-w-md rounded-2xl bg-white overflow-hidden" style={{ boxShadow: "0 12px 32px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: MUTED + "22" }}>
+                <Search size={16} style={{ color: MUTED }} />
+                <input autoFocus value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search posts..."
+                  className="flex-1 outline-none text-[14px] bg-transparent" style={{ color: CHARCOAL }} />
+                <kbd className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: MUTED + "18", color: MUTED }}>Esc</kbd>
+              </div>
+              <div className="max-h-[50vh] overflow-y-auto">
+                {searchQuery.trim() === "" ? (
+                  <p className="text-[12.5px] px-4 py-6 text-center" style={{ color: MUTED }}>Type to search posts by keyword or mood.</p>
+                ) : (
+                  (() => {
+                    const q = searchQuery.trim().toLowerCase();
+                    const results = posts.filter((p) => p.text.toLowerCase().includes(q) || (MOODS[p.mood]?.label || "").toLowerCase().includes(q));
+                    if (results.length === 0) return <p className="text-[12.5px] px-4 py-6 text-center" style={{ color: MUTED }}>No posts match "{searchQuery}"</p>;
+                    return results.map((p) => (
+                      <button key={p.id} onClick={() => {
+                        setSearchOpen(false); setSearchQuery("");
+                        if (p.isMine) { setActivePostId(p.id); setView("postInbox"); }
+                        else { openOrStartThread(p.id); }
+                      }} className="w-full text-left px-4 py-3 flex items-start gap-2 hover:bg-black/[0.03] transition">
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full shrink-0 mt-0.5" style={{ backgroundColor: (MOODS[p.mood]?.color || MUTED) + "22", color: CHARCOAL }}>
+                          {MOODS[p.mood]?.label}
+                        </span>
+                        <span className="text-[13px] line-clamp-2" style={{ color: CHARCOAL }}>{p.text}</span>
+                      </button>
+                    ));
+                  })()
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {toast && (
-          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 text-sm px-4 py-2 rounded-full shadow-lg flex items-center gap-2 max-w-[90%]" style={{ backgroundColor: CHARCOAL, color: "#fff" }}>
-            <Check size={14} style={{ color: TEAL }} className="shrink-0" /><span>{toast}</span>
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 text-sm px-4 py-2 rounded-full shadow-lg flex items-center gap-2 max-w-[90%]"
+            style={isErrorToast(toast) ? { backgroundColor: "#C0392B", color: "#fff" } : { backgroundColor: CHARCOAL, color: "#fff" }}>
+            {isErrorToast(toast) ? <X size={14} className="shrink-0" /> : <Check size={14} style={{ color: TEAL }} className="shrink-0" />}
+            <span>{toast}</span>
+            {undoAction && (
+              <button onClick={undoAction.run} className="ml-1 font-semibold underline underline-offset-2 shrink-0" style={{ color: TEAL }}>
+                {undoAction.label}
+              </button>
+            )}
           </div>
         )}
 
         {(view === "home" || view === "messages" || view === "notifications" || view === "opener" || view === "profile") && (
-          <header className="relative px-5 pt-7 pb-4 border-b transition-colors duration-200" style={darkMode
-            ? { borderColor: DARKBORDER, backgroundImage: `linear-gradient(180deg, ${LOGO_PURPLE}1A, transparent)` }
-            : { borderColor: MUTED + "22", backgroundImage: `linear-gradient(180deg, ${CORAL}0F, transparent)` }}>
+          <header className="sticky top-0 z-20 px-5 pt-7 pb-4 border-b backdrop-blur transition-colors duration-200" style={darkMode
+            ? { borderColor: DARKBORDER, backgroundColor: DARKBG + "E6", backgroundImage: `linear-gradient(180deg, ${LOGO_PURPLE}1A, transparent)` }
+            : { borderColor: MUTED + "22", backgroundColor: CREAM + "E6", backgroundImage: `linear-gradient(180deg, ${CORAL}0F, transparent)` }}>
             {view === "profile" && (
               <button onClick={() => setView("settings")} aria-label="Settings"
-                className="absolute left-4 top-6 w-9 h-9 rounded-full flex items-center justify-center active:scale-95 transition" style={darkMode
+                className="absolute left-4 top-6 w-9 h-9 rounded-full flex items-center justify-center active:scale-95 hover:opacity-80 transition" style={darkMode
                   ? { backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}`, boxShadow: "0 2px 6px rgba(0,0,0,0.25)" }
                   : { backgroundColor: "#fff", border: `1px solid ${MUTED}22`, boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
                 <Settings size={16} color={darkMode ? DARKTEXT : CHARCOAL} />
+              </button>
+            )}
+            {view === "home" && (
+              <button onClick={() => setSearchOpen(true)} aria-label="Search (Ctrl+K)"
+                className="absolute right-4 top-6 w-9 h-9 rounded-full flex items-center justify-center active:scale-95 hover:opacity-80 transition" style={{ backgroundColor: "#fff", border: `1px solid ${MUTED}22`, boxShadow: "0 2px 6px rgba(0,0,0,0.05)" }}>
+                <Search size={15} color={CHARCOAL} />
               </button>
             )}
             <div className={`flex items-center gap-2 mb-3 ${view === "profile" ? "justify-center" : ""}`}>
@@ -1692,7 +1848,16 @@ export default function HeartLeakPrototype() {
         )}
 
         {view === "home" && (
-          <main className="flex-1 overflow-y-auto px-5 py-4 space-y-3 pb-28">
+          <main ref={homeFeedRef} onScroll={(e) => setShowBackToTop(e.currentTarget.scrollTop > 400)} className="flex-1 overflow-y-auto px-5 py-4 space-y-3 pb-28">
+            {posts.length === 0 && (
+              <div className="flex flex-col items-center text-center pt-14 px-4">
+                <div className="w-14 h-14 rounded-full flex items-center justify-center mb-3" style={{ backgroundColor: CORAL + "14" }}>
+                  <Feather size={22} style={{ color: CORAL }} />
+                </div>
+                <p className="text-[14px] font-medium" style={{ color: CHARCOAL }}>Nothing here yet</p>
+                <p className="text-[12px] mt-1 max-w-[220px]" style={{ color: MUTED }}>Be the first to share how you're feeling — tap the pen button below.</p>
+              </div>
+            )}
             {[...posts]
               .sort((a, b) => {
                 const pinnedDiff = (b.isPermanent ? 1 : 0) - (a.isPermanent ? 1 : 0);
@@ -1744,18 +1909,18 @@ export default function HeartLeakPrototype() {
                     )}
                     <div className="mt-3 pt-3 flex justify-end" style={{ borderTop: `1px solid ${MUTED}1A` }}>
                       {!p.isMine && !t && (
-                        <button onClick={() => openOrStartThread(p.id)} className="text-[12px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 transition" style={{ background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL) }}>
+                        <button onClick={() => openOrStartThread(p.id)} className="text-[12px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 hover:opacity-80 transition" style={{ background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL) }}>
                           <Ear size={13} /> Here to Listen
                         </button>
                       )}
                       {!p.isMine && t && (
-                        <button onClick={() => openOrStartThread(p.id)} className="text-[12px] font-medium px-3 py-1.5 rounded-full active:scale-95 transition" style={{ backgroundColor: CHARCOAL + "0F", color: CHARCOAL }}>
+                        <button onClick={() => openOrStartThread(p.id)} className="text-[12px] font-medium px-3 py-1.5 rounded-full active:scale-95 hover:opacity-80 transition" style={{ backgroundColor: CHARCOAL + "0F", color: CHARCOAL }}>
                           Continue chat
                         </button>
                       )}
                       {/* #1 (new) — reply count only ever renders for the post owner */}
                       {p.isMine && myReplies.length > 0 && (
-                        <button onClick={() => { setActivePostId(p.id); setView("postInbox"); }} className="text-[12px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 transition" style={{ background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL) }}>
+                        <button onClick={() => { setActivePostId(p.id); setView("postInbox"); }} className="text-[12px] font-medium px-3 py-1.5 rounded-full flex items-center gap-1 active:scale-95 hover:opacity-80 transition" style={{ background: gradient(CORAL), color: "#fff", boxShadow: glow(CORAL) }}>
                           <Inbox size={13} /> {myReplies.length} {myReplies.length === 1 ? "reply" : "replies"}
                         </button>
                       )}
@@ -1768,6 +1933,22 @@ export default function HeartLeakPrototype() {
               );
             })}
           </main>
+        )}
+
+        {!FULLSCREEN_VIEWS.includes(view) && (
+          <button onClick={() => setView("faqs")} aria-label="Help & support"
+            className="fixed bottom-24 left-5 z-30 w-10 h-10 rounded-full flex items-center justify-center active:scale-90 hover:opacity-90 transition"
+            style={{ background: gradient(PLUM), color: "#fff", boxShadow: glow(PLUM, "55") }}>
+            <HelpCircle size={18} />
+          </button>
+        )}
+
+        {view === "home" && showBackToTop && (
+          <button onClick={() => homeFeedRef.current?.scrollTo({ top: 0, behavior: "smooth" })} aria-label="Back to top"
+            className="fixed bottom-24 right-5 z-30 w-10 h-10 rounded-full flex items-center justify-center active:scale-90 hover:opacity-80 transition"
+            style={{ backgroundColor: CHARCOAL, color: "#fff", boxShadow: "0 4px 14px rgba(0,0,0,0.28)" }}>
+            <ArrowUp size={18} />
+          </button>
         )}
 
         {view === "opener" && (
@@ -1943,7 +2124,7 @@ export default function HeartLeakPrototype() {
                   </div>
                 ))}
                 <button onClick={() => setOpenerResults(null)}
-                  className="w-full py-3 rounded-xl font-medium text-sm active:scale-[0.98] transition" style={{ border: `1px solid ${MUTED}33`, color: MUTED }}>
+                  className="w-full py-3 rounded-xl font-medium text-sm active:scale-[0.98] hover:opacity-90 transition" style={{ border: `1px solid ${MUTED}33`, color: MUTED }}>
                   Details badlo
                 </button>
               </div>
@@ -2003,7 +2184,7 @@ export default function HeartLeakPrototype() {
                     const lastText = last.deleted ? "Message deleted" : last.text;
                     return (
                       <button key={t.id} onClick={() => { setThreadOrigin("postInbox"); setActiveThreadId(t.id); setView("thread"); }}
-                        className="w-full text-left rounded-2xl p-4 bg-white flex items-center gap-3 active:scale-[0.98] transition" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 8px rgba(58,46,42,0.04)" }}>
+                        className="w-full text-left rounded-2xl p-4 bg-white flex items-center gap-3 active:scale-[0.98] hover:opacity-90 transition" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 8px rgba(58,46,42,0.04)" }}>
                         {t.friendStatus === "connected" && <Avatar name={displayName(t)} pic={t.pic} size={38} />}
                         <div className="min-w-0 flex-1">
                           <p className="text-[14px] font-semibold" style={{ color: CHARCOAL }}>{displayName(t)}</p>
@@ -2089,7 +2270,7 @@ export default function HeartLeakPrototype() {
 
                     {isYou && !m.deleted && openMsgMenu === m.id && (
                       <div className="flex items-center gap-2 mt-1.5 px-1">
-                        <button onClick={() => startEditMessage(m)} className="text-[11px] font-medium flex items-center gap-1 px-2.5 py-1 rounded-full active:scale-95 transition" style={{ backgroundColor: CHARCOAL + "0F", color: CHARCOAL }}>
+                        <button onClick={() => startEditMessage(m)} className="text-[11px] font-medium flex items-center gap-1 px-2.5 py-1 rounded-full active:scale-95 hover:opacity-80 transition" style={{ backgroundColor: CHARCOAL + "0F", color: CHARCOAL }}>
                           <Pencil size={10} /> Edit
                         </button>
                         <button onClick={() => deleteMessage(m)}
@@ -2124,16 +2305,16 @@ export default function HeartLeakPrototype() {
             )}
 
             <div className="px-4 py-3 border-t flex items-center gap-2" style={{ borderColor: MUTED + "22" }}>
-              <button onClick={() => setToast("Photos & voice notes — coming soon")} className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 active:scale-90 transition" style={{ color: MUTED }}>
+              <button onClick={() => setToast("Photos & voice notes — coming soon")} className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 active:scale-90 hover:opacity-80 transition" style={{ color: MUTED }}>
                 <Paperclip size={17} />
               </button>
               <input value={msgDraft} onChange={(e) => setMsgDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendInThread()}
                 placeholder={activeThread.friendStatus === "connected" ? "Message..." : "Reply anonymously..."}
                 className="flex-1 rounded-full px-4 py-2.5 text-[14px] outline-none bg-white" style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
-              <button onClick={() => setShowEmoji((s) => !s)} className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 active:scale-90 transition" style={{ color: showEmoji ? CORAL : MUTED }}>
+              <button onClick={() => setShowEmoji((s) => !s)} className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 active:scale-90 hover:opacity-80 transition" style={{ color: showEmoji ? CORAL : MUTED }}>
                 <SmilePlus size={19} />
               </button>
-              <button onClick={sendInThread} className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 active:scale-95 transition" style={{ background: gradient(TEAL), boxShadow: glow(TEAL) }}>
+              <button onClick={sendInThread} className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 active:scale-95 hover:opacity-80 transition" style={{ background: gradient(TEAL), boxShadow: glow(TEAL) }}>
                 <Send size={16} color="#fff" />
               </button>
             </div>
@@ -2406,7 +2587,7 @@ export default function HeartLeakPrototype() {
                   const tag = t.friendStatus === "connected" ? getConnectionTag(daysConnected(t.connectedAt)) : null;
                   return (
                     <button key={t.id} onClick={() => { setThreadOrigin("messages"); setActiveThreadId(t.id); setView("thread"); }}
-                      className="w-full text-left rounded-2xl p-4 bg-white flex items-center gap-3 active:scale-[0.98] transition" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 8px rgba(58,46,42,0.04)" }}>
+                      className="w-full text-left rounded-2xl p-4 bg-white flex items-center gap-3 active:scale-[0.98] hover:opacity-90 transition" style={{ border: `1px solid ${MUTED}1F`, boxShadow: "0 2px 8px rgba(58,46,42,0.04)" }}>
                       {/* #5 — profile picture shown only once connected */}
                       {msgTab === "connected" && <Avatar name={displayName(t)} pic={t.pic} size={42} />}
                       <div className="min-w-0 flex-1">
@@ -2432,6 +2613,15 @@ export default function HeartLeakPrototype() {
 
         {view === "notifications" && (
           <main className="flex-1 overflow-y-auto px-5 py-4 space-y-2 pb-28">
+            {notifications.length === 0 && (
+              <div className="flex flex-col items-center text-center pt-14 px-4">
+                <div className="w-14 h-14 rounded-full flex items-center justify-center mb-3" style={{ backgroundColor: MUTED + "14" }}>
+                  <Bell size={22} style={{ color: MUTED }} />
+                </div>
+                <p className="text-[14px] font-medium" style={{ color: CHARCOAL }}>No notifications yet</p>
+                <p className="text-[12px] mt-1 max-w-[220px]" style={{ color: MUTED }}>Friend requests and replies will show up here.</p>
+              </div>
+            )}
             {notifications.map((n) => (
               <div key={n.id} onClick={() => openNotification(n)}
                 className={`rounded-xl p-3.5 bg-white flex items-start gap-3 transition ${n.threadId ? "cursor-pointer active:scale-[0.98]" : ""}`}
@@ -2452,7 +2642,7 @@ export default function HeartLeakPrototype() {
                   <div className="flex items-center justify-between mt-1">
                     <p className="text-[11px]" style={{ color: MUTED }}>{n.time}</p>
                     {n.type === "friend_request" && (
-                      <button onClick={(e) => { e.stopPropagation(); addBack(n.threadId); }} className="text-[11px] font-medium px-2.5 py-1 rounded-full active:scale-95 transition" style={{ background: gradient(AMBER), color: "#4A3708" }}>
+                      <button onClick={(e) => { e.stopPropagation(); addBack(n.threadId); }} className="text-[11px] font-medium px-2.5 py-1 rounded-full active:scale-95 hover:opacity-80 transition" style={{ background: gradient(AMBER), color: "#4A3708" }}>
                         Add Back
                       </button>
                     )}
@@ -2607,7 +2797,7 @@ export default function HeartLeakPrototype() {
                 <>
                   <div className="flex flex-col items-center text-center mb-5">
                     {editingConnectedProfile ? (
-                      <label className="relative cursor-pointer active:scale-95 transition">
+                      <label className="relative cursor-pointer active:scale-95 hover:opacity-80 transition">
                         <input type="file" accept="image/*" className="hidden" onChange={(e) => handlePicUpload(e, setConnectedDraft)} />
                         <Avatar name={connectedDraft.username || "?"} pic={connectedDraft.pic} size={84} />
                         <div className="absolute bottom-0 right-0 rounded-full flex items-center justify-center" style={{ width: 26, height: 26, backgroundColor: DARKSURFACE, border: `1px solid ${DARKBORDER}` }}>
@@ -2865,6 +3055,11 @@ export default function HeartLeakPrototype() {
                   <ChevronRight size={15} style={{ color: MUTED }} />
                 </button>
                 <div className="h-px" style={{ backgroundColor: MUTED + "1A" }} />
+                <button onClick={() => setView("faqs")} className="w-full px-4 py-3.5 flex items-center justify-between">
+                  <span className="text-[13.5px] flex items-center gap-2.5" style={{ color: CHARCOAL }}><HelpCircle size={16} style={{ color: MUTED }} /> FAQs</span>
+                  <ChevronRight size={15} style={{ color: MUTED }} />
+                </button>
+                <div className="h-px" style={{ backgroundColor: MUTED + "1A" }} />
                 <button onClick={() => setView("grievance")} className="w-full px-4 py-3.5 flex items-center justify-between">
                   <span className="text-[13.5px] flex items-center gap-2.5" style={{ color: CHARCOAL }}><MessageSquareWarning size={16} style={{ color: MUTED }} /> Grievance Redressal</span>
                   <ChevronRight size={15} style={{ color: MUTED }} />
@@ -2874,16 +3069,34 @@ export default function HeartLeakPrototype() {
           </main>
         )}
 
-        {(view === "privacyPolicy" || view === "termsOfService" || view === "grievance") && (
+        {(view === "privacyPolicy" || view === "termsOfService" || view === "grievance" || view === "faqs") && (
           <main className="flex-1 flex flex-col overflow-y-auto">
             <header className="px-4 pt-6 pb-3 flex items-center gap-3 border-b" style={{ borderColor: MUTED + "22" }}>
               <button onClick={() => setView("settings")}><ArrowLeft size={20} color={CHARCOAL} /></button>
               <span className="text-sm font-medium" style={{ color: CHARCOAL }}>
-                {view === "privacyPolicy" ? "Privacy Policy" : view === "termsOfService" ? "Terms of Service" : "Grievance Redressal"}
+                {view === "privacyPolicy" ? "Privacy Policy" : view === "termsOfService" ? "Terms of Service" : view === "faqs" ? "FAQs" : "Grievance Redressal"}
               </span>
             </header>
             <div className="px-5 py-5 flex-1 text-[13px] leading-relaxed space-y-3" style={{ color: CHARCOAL }}>
-              <p className="text-[11.5px]" style={{ color: MUTED }}>Last updated: 9 September 2026</p>
+              {view !== "faqs" && <p className="text-[11.5px]" style={{ color: MUTED }}>Last updated: 9 September 2026</p>}
+
+              {view === "faqs" && (
+                <>
+                  {[
+                    { q: "Is DearStrangers really anonymous?", a: "Yes. No one sees your real name, photo, or bio unless you and they both choose to connect back." },
+                    { q: "How does keyword matching work?", a: "Add up to 10 keywords to your profile. Posts and people that share them get quietly bumped up in your feed." },
+                    { q: "Can I take back a message?", a: "You can delete a message once it's been seen, and edit it before then." },
+                    { q: "How do I delete my account?", a: "Settings → Delete account permanently. This is instant and irreversible — it erases your profile, posts, and messages." },
+                    { q: "Can I get a copy of my data?", a: "Yes — Settings → Export your data downloads a JSON file of everything tied to your account." },
+                    { q: "Someone's bothering me — what do I do?", a: "Block or report them from their profile. Serious concerns can also go to our Grievance Officer." },
+                  ].map((f) => (
+                    <div key={f.q} className="rounded-xl p-3.5" style={{ border: `1px solid ${MUTED}22` }}>
+                      <p className="font-medium mb-1" style={{ color: CHARCOAL }}>{f.q}</p>
+                      <p className="text-[12.5px]" style={{ color: MUTED }}>{f.a}</p>
+                    </div>
+                  ))}
+                </>
+              )}
 
               {view === "privacyPolicy" && (
                 <>
@@ -2955,6 +3168,11 @@ export default function HeartLeakPrototype() {
               <textarea value={composeText} onChange={(e) => setComposeText(e.target.value)} rows={6}
                 placeholder="No one will know it's you. Say the real thing."
                 className="w-full flex-1 rounded-xl p-4 text-[15px] outline-none bg-white" style={{ border: `1px solid ${MUTED}33`, color: CHARCOAL }} />
+              {composeText.trim() && (
+                <p className="text-[11px] mt-1.5 flex items-center gap-1" style={{ color: MUTED }}>
+                  <Check size={11} /> Draft saved
+                </p>
+              )}
               <button onClick={publishPost} disabled={!composeText.trim() || isPublishing || !authUserId}
                 className="mt-4 w-full py-3 rounded-xl font-medium text-sm disabled:opacity-30 active:scale-[0.98] transition flex items-center justify-center gap-2" style={{ background: gradient(AMBER), color: "#4A3708", boxShadow: glow(AMBER) }}>
                 <Feather size={15} /> {isPublishing ? "Sharing..." : "Share Your Feelings"}
@@ -2970,7 +3188,7 @@ export default function HeartLeakPrototype() {
                 <Icon size={20} /><span className="text-[10px] font-medium">{label}</span>
               </button>
             ))}
-            <button onClick={() => setView("compose")} className="rounded-full flex items-center justify-center -mt-6 active:scale-95 transition" style={{ background: gradient(AMBER), width: 52, height: 52, boxShadow: glow(AMBER, "77") }}>
+            <button onClick={() => setView("compose")} className="rounded-full flex items-center justify-center -mt-6 active:scale-95 hover:opacity-80 transition" style={{ background: gradient(AMBER), width: 52, height: 52, boxShadow: glow(AMBER, "77") }}>
               <PenLine size={20} color="#4A3708" />
             </button>
             {TABS.slice(2).map(({ key, label, Icon }) => (
